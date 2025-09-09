@@ -502,6 +502,157 @@
             resizeCanvas();
             startupCheck();
         });
+
+        // --------------------------------------------------------------------
+        // Inject rating slider and A/B mode controls into the sidebar
+        (function(){
+            const sidebar = document.getElementById('sidebar');
+            if (!sidebar) return;
+            // Create A/B mode control container
+            const abControls = document.createElement('div');
+            abControls.id = 'ab-controls';
+            abControls.style.marginTop = '12px';
+            abControls.innerHTML = '<label style="margin-right:8px;">Mode:</label><button id="btnA">A</button><button id="btnB">B</button><span id="abStatus" style="margin-left:8px; opacity:.8;"></span>';
+            sidebar.appendChild(abControls);
+            // Create rating control container
+            const rateControls = document.createElement('div');
+            rateControls.id = 'rate-controls';
+            rateControls.style.marginTop = '12px';
+            rateControls.innerHTML = '<label for="rate">How did that feel?</label><input id="rate" type="range" min="-5" max="5" step="1" value="0" /><span id="rateVal">0</span><input id="rateNote" type="text" placeholder="optional note" style="margin-left:8px; width:220px;" /><button id="rateSend">Send</button>';
+            sidebar.appendChild(rateControls);
+            // Helper to refresh A/B status
+            async function refreshState() {
+                try {
+                    const res = await fetch('/api/state');
+                    const js = await res.json();
+                    document.getElementById('abStatus').textContent = 'Current: ' + (js.ab_choice || 'A');
+                } catch (e) {}
+            }
+            refreshState();
+            // Bind A/B buttons
+            document.getElementById('btnA').addEventListener('click', async () => {
+                await fetch('/api/ab', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({choice: 'A'})});
+                refreshState();
+            });
+            document.getElementById('btnB').addEventListener('click', async () => {
+                await fetch('/api/ab', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({choice: 'B'})});
+                refreshState();
+            });
+            // Bind rating slider events
+            const rateEl = document.getElementById('rate');
+            const rateValEl = document.getElementById('rateVal');
+            rateEl.addEventListener('input', () => {
+                rateValEl.textContent = rateEl.value;
+            });
+            document.getElementById('rateSend').addEventListener('click', async () => {
+                const score = parseInt(rateEl.value, 10);
+                const note = document.getElementById('rateNote').value || '';
+                await fetch('/api/feedback', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({score: score, note: note})});
+                document.getElementById('rateNote').value = '';
+            });
+        })();
+
+        // --------------------------------------------------------------------
+        // Inject invite link generator and persona memory controls into the sidebar
+        (function(){
+            const sidebar = document.getElementById('sidebar');
+            if (!sidebar) return;
+            // --- Invite Friend card ---
+            const inviteCard = document.createElement('div');
+            inviteCard.id = 'invite-card';
+            inviteCard.style.marginTop = '12px';
+            inviteCard.style.padding = '10px';
+            inviteCard.style.borderRadius = '12px';
+            inviteCard.style.background = '#111';
+            inviteCard.style.border = '1px solid #2a2a2a';
+            inviteCard.innerHTML = `
+                <div style="font-weight:600;margin-bottom:6px;">Invite a friend</div>
+                <button id="btnInvite" style="padding:6px 10px;border-radius:8px;">Generate link</button>
+                <input id="inviteUrl" type="text" readonly style="width:100%;margin-top:8px;padding:6px;border-radius:8px;background:#0a0a0a;border:1px solid #333" />
+                <button id="btnCopyInvite" style="margin-top:6px;padding:6px 10px;border-radius:8px;">Copy</button>
+                <div id="inviteHint" style="opacity:.7;margin-top:6px;font-size:.9em">When opened via your tunnel, the public URL is returned automatically.</div>
+            `;
+            sidebar.appendChild(inviteCard);
+            // Bind invite button
+            const btnInvite = inviteCard.querySelector('#btnInvite');
+            const inviteUrlInput = inviteCard.querySelector('#inviteUrl');
+            const btnCopyInvite = inviteCard.querySelector('#btnCopyInvite');
+            const inviteHint = inviteCard.querySelector('#inviteHint');
+            btnInvite.addEventListener('click', async () => {
+                try {
+                    const res = await fetch('/api/invite');
+                    const js = await res.json();
+                    inviteUrlInput.value = js.url || (location.origin + '/');
+                } catch (e) {
+                    inviteUrlInput.value = location.origin + '/';
+                }
+            });
+            btnCopyInvite.addEventListener('click', async () => {
+                if (!inviteUrlInput.value) return;
+                try { await navigator.clipboard.writeText(inviteUrlInput.value); } catch (e) {}
+                inviteHint.textContent = 'Copied!';
+                setTimeout(() => {
+                    inviteHint.textContent = 'When opened via your tunnel, the public URL is returned automatically.';
+                }, 1500);
+            });
+            // --- Persona Memory card ---
+            const memoryCard = document.createElement('div');
+            memoryCard.id = 'memory-card';
+            memoryCard.style.marginTop = '12px';
+            memoryCard.style.padding = '10px';
+            memoryCard.style.borderRadius = '12px';
+            memoryCard.style.background = '#111';
+            memoryCard.style.border = '1px solid #2a2a2a';
+            memoryCard.innerHTML = `
+                <div style="font-weight:600;margin-bottom:6px;">Persona memory</div>
+                <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+                    <input id="memText" type="text" placeholder="Add a note (e.g., likes slower, prefers Mode B)" style="flex:1;padding:6px;border-radius:8px;background:#0a0a0a;border:1px solid #333" />
+                    <button id="btnMemAdd" style="padding:6px 10px;border-radius:8px;">Add</button>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+                    <button id="btnMemSumm" style="padding:6px 10px;border-radius:8px;flex:1;">Summarise ➜ persona.yaml</button>
+                </div>
+                <div id="memList" style="max-height:160px;overflow:auto;border:1px solid #222;border-radius:8px;padding:6px;background:#0a0a0a"></div>
+            `;
+            sidebar.appendChild(memoryCard);
+            // Memory helpers
+            const memText = memoryCard.querySelector('#memText');
+            const btnMemAdd = memoryCard.querySelector('#btnMemAdd');
+            const memList = memoryCard.querySelector('#memList');
+            const btnMemSumm = memoryCard.querySelector('#btnMemSumm');
+            async function refreshMem() {
+                try {
+                    const r = await fetch('/api/memory/recent?n=20');
+                    const js = await r.json();
+                    const items = (js.items || []).slice().reverse();
+                    if (!items.length) {
+                        memList.innerHTML = '<div style="opacity:.6">No memory yet</div>';
+                        return;
+                    }
+                    memList.innerHTML = items.map(x => {
+                        const d = new Date(x.ts * 1000);
+                        const ts = d.toLocaleString();
+                        const text = (x.text || '').replace(/</g, '&lt;');
+                        return `<div style="padding:4px 0;border-bottom:1px dashed #222"><span style="opacity:.7">${ts}</span><br>${text}</div>`;
+                    }).join('');
+                } catch (e) {
+                    memList.innerHTML = '<div style="opacity:.6">No memory yet</div>';
+                }
+            }
+            btnMemAdd.addEventListener('click', async () => {
+                const text = (memText.value || '').trim();
+                if (!text) return;
+                await fetch('/api/memory/add', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text})});
+                memText.value = '';
+                refreshMem();
+            });
+            btnMemSumm.addEventListener('click', async () => {
+                await fetch('/api/memory/summarise', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
+                refreshMem();
+            });
+            // Initial load
+            refreshMem();
+        })();
     </script>
 </body>
 </html>

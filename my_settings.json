@@ -1,6 +1,6 @@
 {
   "handy_key": "J1j64GQb",
-  "ai_name": "dee",
+  "ai_name": "BOT",
   "persona_desc": "An energetic and passionate girlfriend",
   "profile_picture_b64": "",
   "elevenlabs_api_key": "",
@@ -14,10 +14,10 @@
     "dislikes": [],
     "key_memories": []
   },
-  "min_depth": 17,
-  "max_depth": 50,
-  "min_speed": 8,
-  "max_speed": 100,
+  "min_depth": 5,
+  "max_depth": 100,
+  "min_speed": 10,
+  "max_speed": 80,
   "auto_min_time": 4.0,
   "auto_max_time": 7.0,
   "milking_min_time": 2.5,

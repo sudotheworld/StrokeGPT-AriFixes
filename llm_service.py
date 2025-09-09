@@ -147,6 +147,15 @@ Your current mood is '{context.get('current_mood')}'. Handy is at {context.get('
 """
         if rules := context.get('rules'):
             prompt_text += "\n### EXTRA RULES FROM ME:\n" + "\n".join(f"- {r}" for r in rules)
+
+        # Include any persona memory notes.  These are prepended by the
+        # application via ctx['persona_memory'] and formatted by the
+        # MemoryManager.  When present, they provide rolling context
+        # about the user's preferences and should be used to inform
+        # responses.  We insert them as a dedicated section at the end of
+        # the prompt so they complement the long‑term memory JSON.
+        if context.get('persona_memory'):
+            prompt_text += "\n### YOUR NOTES ABOUT ME:\n" + context.get('persona_memory')
         
         return prompt_text
 

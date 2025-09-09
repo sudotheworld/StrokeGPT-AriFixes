@@ -2,6 +2,7 @@ import os
 import sys
 import io
 import re
+import json
 import atexit
 import threading
 import time
@@ -12,6 +13,7 @@ from config import Config
 
 from settings_manager import SettingsManager
 from handy_controller import HandyController
+from memory_manager import MemoryManager
 from llm_service import LLMService
 from audio_service import AudioService
 from background_modes import AutoModeThread, auto_mode_logic, milking_mode_logic, edging_mode_logic
@@ -42,6 +44,21 @@ calibration_pos_mm = 0.0
 user_signal_event = threading.Event()
 mode_message_queue = deque(maxlen=5)
 edging_start_time = None
+
+# -------------------------------------------------------------------------
+# Memory manager
+#
+# A global instance of MemoryManager is created here.  It is used to
+# store events from the persona and recall context when building prompts.
+mem = MemoryManager()
+
+# -------------------------------------------------------------------------
+# Feedback and A/B state persistence
+#
+# FEEDBACK_LOG: appends one JSON line per feedback submission (score/note/time).
+# STATE_FILE: stores the current A/B mode choice so it can persist across restarts.
+FEEDBACK_LOG = "feedback.log"
+STATE_FILE = "session_state.json"
 
 # Easter Egg State
 special_persona_mode = None
@@ -135,6 +152,10 @@ def start_background_mode(mode_logic, initial_message, mode_name):
 # ─── FLASK ROUTES ──────────────────────────────────────────────────────────────────────────────────────
 @app.route('/')
 def home_page():
+    # Optional room pin gate: if a ROOM_PIN is set in config, require ?pin=ROOM_PIN
+    pin = request.args.get('pin', '')
+    if Config.ROOM_PIN and pin != Config.ROOM_PIN:
+        return "Room locked. Append ?pin=<PIN> to the URL.", 401
     base_path = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(base_path, 'index.html'), 'r', encoding='utf-8') as f:
         return render_template_string(f.read())
@@ -151,6 +172,140 @@ def health():
         "ollama_url": Config.OLLAMA_URL,
         "handy_key_set": bool(handy.handy_key),
     })
+
+# -------------------------------------------------------------------------
+# Feedback and A/B choice helpers and endpoints
+
+def _load_state() -> dict:
+    """Load the session state from STATE_FILE or return defaults."""
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    # Default state: A mode
+    return {"ab_choice": "A"}
+
+
+def _save_state(state: dict) -> None:
+    """Persist the session state to STATE_FILE."""
+    try:
+        with open(STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(state, f)
+    except Exception:
+        pass
+
+
+@app.post("/api/feedback")
+def api_feedback():
+    """Record a feedback score and optional note sent from the UI."""
+    data = request.get_json(silent=True) or {}
+    try:
+        score = int(data.get("score", 0))
+    except Exception:
+        score = 0
+    note = str(data.get("note", ""))[:300]
+    rec = {
+        "ts": time.time(),
+        "score": score,
+        "note": note,
+    }
+    try:
+        with open(FEEDBACK_LOG, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+    return jsonify({"ok": True})
+
+
+@app.post("/api/ab")
+def api_ab():
+    """Set the current A/B mode choice. Accepts 'A' or 'B'."""
+    data = request.get_json(silent=True) or {}
+    choice = str(data.get("choice", "A")).upper()
+    if choice not in ("A", "B"):
+        return jsonify({"ok": False, "error": "choice must be A or B"}), 400
+    state = _load_state()
+    state["ab_choice"] = choice
+    _save_state(state)
+    return jsonify({"ok": True, "choice": choice})
+
+
+@app.get("/api/state")
+def api_state():
+    """Return the persisted session state."""
+    return jsonify(_load_state())
+
+# -------------------------------------------------------------------------
+# Memory and invite endpoints
+#
+@app.post("/api/memory/add")
+def api_memory_add():
+    """Record a freeform note into the persona memory.
+
+    The payload should be a JSON object with optional fields:
+      - ``user``: identifier for the note author.  Defaults to the
+        requester's IP address.
+      - ``text``: the content of the note.  Empty strings will result
+        in a no-op error response.
+      - ``tags``: optional list of strings tagging the note.
+
+    Returns a JSON object indicating success and echoing the recorded
+    event.
+    """
+    data = request.get_json(silent=True) or {}
+    user = (data.get('user') or request.remote_addr or 'room')
+    text = data.get('text', '')
+    tags = data.get('tags') or []
+    return jsonify(mem.add_event(user, text, tags))
+
+
+@app.get("/api/memory/recent")
+def api_memory_recent():
+    """Return the last `n` memory events.
+
+    Query parameter:
+      - ``n`` (int): maximum number of events to return (default 25).
+    """
+    try:
+        n = int(request.args.get('n', '25'))
+    except Exception:
+        n = 25
+    items = mem.recent(n)
+    return jsonify({"items": items})
+
+
+@app.post("/api/memory/summarise")
+def api_memory_summarise():
+    """Generate and persist a YAML‑like summary of the persona memory.
+
+    The POST body may include an optional ``user`` field to label the
+    summary.  The summary is written to disk and returned to the
+    caller.
+    """
+    data = request.get_json(silent=True) or {}
+    user = data.get('user') or 'room'
+    persona_yaml = mem.summarise(user)
+    return jsonify({"ok": True, "persona_yaml": persona_yaml})
+
+
+@app.get("/api/invite")
+def api_invite():
+    """Return a sharable URL for the current session.
+
+    This endpoint bases the URL on the host used for the request.  If
+    a ROOM_PIN is configured, it appends ``?pin=<PIN>`` to the
+    returned link.  When accessed via a Cloudflare or ngrok tunnel the
+    appropriate public host is reflected automatically in
+    ``request.host_url``.
+    """
+    base = request.host_url.rstrip('/')  # e.g. https://abc.trycloudflare.com
+    url = f"{base}/"
+    if Config.ROOM_PIN:
+        url = f"{url}?pin={Config.ROOM_PIN}"
+        # If the base URL already contains a query string, append with &
+    return jsonify({"url": url})
 
 def _konami_code_action():
     def pattern_thread():
@@ -207,7 +362,17 @@ def handle_user_message():
         mode_message_queue.append(user_input)
         return jsonify({"status": "message_relayed_to_active_mode"})
     
-    llm_response = llm.get_chat_response(chat_history, get_current_context())
+    # Retrieve a rolling memory context for this user and supply it to the LLM via the context dict.
+    user_id = request.remote_addr or "room"
+    ctx = get_current_context()
+    # Inject persona memory into the context if available.  The LLM will
+    # incorporate this under a dedicated section in the system prompt.
+    mem_block = mem.context(user_id)
+    if mem_block:
+        ctx['persona_memory'] = mem_block
+    else:
+        ctx.pop('persona_memory', None)
+    llm_response = llm.get_chat_response(chat_history, ctx)
     
     if special_persona_mode is not None:
         special_persona_interactions_left -= 1

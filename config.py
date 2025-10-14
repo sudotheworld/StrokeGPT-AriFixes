@@ -68,7 +68,7 @@ def _load_user_secrets() -> bool:
                 with open(p, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 # Only set known keys if they are unset in the environment
-                for key in ("HANDY_KEY", "ELEVENLABS_API_KEY"):
+                for key in ("HANDY_KEY", "ELEVENLABS_API_KEY", "IMAGE_API_KEY"):
                     val = data.get(key)
                     if val and not os.environ.get(key):
                         os.environ[key] = str(val)
@@ -101,6 +101,13 @@ class Config:
     # API keys
     HANDY_KEY: str = os.getenv("HANDY_KEY", "")
     ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
+    IMAGE_API_KEY: str = os.getenv("IMAGE_API_KEY", "")
+
+    # Image generation service configuration
+    IMAGE_API_URL: str = os.getenv("IMAGE_API_URL", "")
+    IMAGE_API_MODEL: str = os.getenv("IMAGE_API_MODEL", "")
+    IMAGE_API_AUTH_HEADER: str = os.getenv("IMAGE_API_AUTH_HEADER", "Authorization")
+    IMAGE_API_KEY_PREFIX: str = os.getenv("IMAGE_API_KEY_PREFIX", "Bearer ")
 
     # Optional room pin for gating the UI (empty string means no pin)
     ROOM_PIN: str = os.getenv("ROOM_PIN", "")

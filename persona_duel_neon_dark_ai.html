@@ -142,6 +142,11 @@
     border:1px solid rgba(255,255,255,.1);
     padding:10px 12px;border-radius: 12px;
   }
+  .theme-toggle{ gap:14px; }
+  .theme-buttons{ align-items:stretch; }
+  .theme-buttons .action{ display:flex; align-items:center; justify-content:center; gap:8px; }
+  .gallery-btn{ display:flex; align-items:center; justify-content:center; gap:8px; font-weight:700; letter-spacing:.2px; }
+  .gallery-btn svg{ flex:0 0 auto; }
   .switch{ position:relative; width:48px; height:28px; background:#333; border-radius: 999px; transition:.25s; cursor: pointer; }
   .switch:before{
     content:""; position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%; background:#111;
@@ -149,6 +154,12 @@
   }
   .switch[data-on="true"]{ background: linear-gradient(90deg,var(--brand1),var(--brand2)); box-shadow: 0 0 8px var(--brand1); }
   .switch[data-on="true"]::before{ left:23px; background: white; }
+  .switch::after{
+    content:"✓"; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%) scale(0.5);
+    color:#fff; font-size:16px; opacity:0; transition:.25s; pointer-events:none;
+  }
+  .switch[data-on="true"]::after{ opacity:1; transform:translate(-50%,-50%) scale(1); }
+  .switch.loading{ opacity:0.6; pointer-events:none; }
 
   /* Main center */
   .main{ grid-area: main; display:grid; grid-template-rows: 1fr auto auto; gap:12px; }
@@ -198,6 +209,24 @@
     box-shadow: 0 0 12px color-mix(in oklab, var(--accent) 80%, transparent), 0 0 0 3px color-mix(in oklab, var(--accent) 50%, transparent);
   }
   .star .num{ position:relative; z-index:1; }
+
+  .theme-gallery{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; z-index:9000; }
+  .theme-gallery.visible{ display:flex; }
+  .theme-gallery__backdrop{ position:absolute; inset:0; background:rgba(5,5,10,0.82); backdrop-filter: blur(6px); }
+  .theme-gallery__dialog{ position:relative; width:min(960px, 92vw); max-height:80vh; background:var(--glass-strong); border:1px solid var(--edge); border-radius:20px; box-shadow:0 18px 50px rgba(0,0,0,0.45); display:flex; flex-direction:column; overflow:hidden; }
+  .theme-gallery__header{ display:flex; align-items:center; justify-content:space-between; padding:18px 22px; border-bottom:1px solid rgba(255,255,255,0.08); background:rgba(0,0,0,0.35); }
+  .theme-gallery__header h4{ margin:0; font-size:18px; letter-spacing:.3px; }
+  .theme-gallery__body{ padding:18px; overflow-y:auto; display:grid; gap:16px; grid-template-columns:repeat(auto-fill, minmax(180px,1fr)); }
+  .theme-card{ display:flex; flex-direction:column; gap:10px; border:1px solid rgba(255,255,255,0.12); border-radius:16px; padding:12px; background:rgba(0,0,0,0.35); cursor:pointer; position:relative; transition:transform .2s, border-color .2s, box-shadow .2s; text-align:left; }
+  .theme-card:hover{ transform:translateY(-2px); border-color:var(--brand1); box-shadow:0 10px 24px rgba(0,0,0,0.35); }
+  .theme-card.active{ border-color:var(--brand2); box-shadow:0 0 0 2px rgba(0,255,255,0.35); }
+  .theme-card__swatch{ position:relative; padding-top:60%; border-radius:12px; overflow:hidden; background:rgba(0,0,0,0.4); display:flex; align-items:center; justify-content:center; }
+  .theme-card__swatch img{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  .theme-card__swatch .swatch-fallback{ position:absolute; inset:0; display:grid; grid-template-columns:repeat(5, 1fr); }
+  .swatch-fallback span{ display:block; }
+  .theme-card__meta{ display:flex; flex-direction:column; gap:4px; }
+  .theme-card__name{ font-weight:800; letter-spacing:.3px; }
+  .theme-card__date{ font-size:11px; color:var(--muted); }
 
   .dropzone{
     margin: 8px 14px 16px 14px;
@@ -482,24 +511,29 @@
 
         <div class="divider"></div>
 
-        <h3>View the Vibe</h3>
-        <div class="small">Aesthetic tuner for the UI theme.</div>
-        <div class="row">
-          <input type="range" min="0" max="100" value="60" id="vibeSlider" />
-          <button class="action ghost" id="vibeRandom">Shuffle</button>
+        <h3>Theme Studio</h3>
+        <div class="small">Let the LLM invent colour palettes and stash them as presets.</div>
+        <div class="row theme-buttons">
+          <button class="action primary" id="llmThemeGenerate">New LLM Theme</button>
+          <button class="action ghost gallery-btn" id="themeGalleryBtn" aria-haspopup="dialog" title="Browse other themes">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M4 7h16M4 12h16M4 17h10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+            <span>Other themes</span>
+          </button>
         </div>
-        
+
         <div class="divider"></div>
 
         <h3>AI Control</h3>
-        <div class="toggle">
+        <div class="toggle theme-toggle">
           <div>
-            <b>Dynamic Theme</b><br>
-            <span class="small">AI sets UI colors & chat background.</span>
+            <b>LLM chooses</b><br>
+            <span class="small">Auto-generate a named preset and capture it with a screenshot.</span>
           </div>
-          <div class="switch" id="aiThemeSwitch" data-on="false" role="switch" aria-checked="false"></div>
+          <div class="switch" id="aiThemeSwitch" data-on="false" role="checkbox" aria-checked="false" tabindex="0"></div>
         </div>
-        
+
       </div>
     </aside>
 
@@ -521,6 +555,20 @@
     <div class="resize" id="pipResize" aria-hidden="true"></div>
   </div>
 
+  <div class="theme-gallery" id="themeGallery" aria-hidden="true">
+    <div class="theme-gallery__backdrop" id="themeGalleryBackdrop" aria-hidden="true"></div>
+    <div class="theme-gallery__dialog" role="dialog" aria-modal="true" aria-labelledby="themeGalleryTitle">
+      <div class="theme-gallery__header">
+        <h4 id="themeGalleryTitle">LLM Theme Catalog</h4>
+        <button class="action ghost" id="themeGalleryClose">Close</button>
+      </div>
+      <div class="theme-gallery__body" id="themeGalleryGrid">
+        <div class="small" data-empty>No saved themes yet — generate one!</div>
+      </div>
+    </div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-GbJ+zR7S3w7Dnk3a1JpNggCBrum1+qsSVqSdz+CA0nVddOZXS6jttuPAHyBs+K6t" crossorigin="anonymous"></script>
 <script>
   // Utility toast
   function toast(msg){
@@ -728,16 +776,271 @@
   const saveLayout = document.getElementById('saveLayout');
   saveLayout?.addEventListener('click', ()=> toast('Layout saved (stub)'));
 
-  // --- NEW --- AI Theme Control Logic
+  // --- LLM Theme Preset Logic ---
   const aiThemeSwitch = document.getElementById('aiThemeSwitch');
-  const mainPanel = document.querySelector('.main.panel');
-  aiThemeSwitch?.addEventListener('click', ()=>{
+  const llmThemeGenerate = document.getElementById('llmThemeGenerate');
+  const themeGallery = document.getElementById('themeGallery');
+  const themeGalleryBtn = document.getElementById('themeGalleryBtn');
+  const themeGalleryClose = document.getElementById('themeGalleryClose');
+  const themeGalleryBackdrop = document.getElementById('themeGalleryBackdrop');
+  const themeGalleryGrid = document.getElementById('themeGalleryGrid');
+  const rootEl = document.documentElement;
+
+  const themeVariableMap = {
+    background: '--bg',
+    glass: '--glass',
+    glass_strong: '--glass-strong',
+    text: '--text',
+    muted: '--muted',
+    edge: '--edge',
+    ok: '--ok',
+    warn: '--warn',
+    bad: '--bad',
+  };
+
+  const computed = getComputedStyle(rootEl);
+  const defaultTheme = {
+    id: 'default-theme',
+    name: 'Original Neon',
+    colors: {
+      background: computed.getPropertyValue('--bg').trim(),
+      glass: computed.getPropertyValue('--glass').trim(),
+      glass_strong: computed.getPropertyValue('--glass-strong').trim(),
+      text: computed.getPropertyValue('--text').trim(),
+      muted: computed.getPropertyValue('--muted').trim(),
+      edge: computed.getPropertyValue('--edge').trim(),
+      ok: computed.getPropertyValue('--ok').trim(),
+      warn: computed.getPropertyValue('--warn').trim(),
+      bad: computed.getPropertyValue('--bad').trim(),
+      brand_colors: [
+        computed.getPropertyValue('--brand1').trim(),
+        computed.getPropertyValue('--brand2').trim(),
+        computed.getPropertyValue('--brand3').trim(),
+        computed.getPropertyValue('--brand4').trim(),
+        computed.getPropertyValue('--brand5').trim(),
+      ],
+    },
+  };
+
+  let themePresets = [];
+  let activeThemeId = defaultTheme.id;
+  let isGeneratingTheme = false;
+  let suppressSwitchHandler = false;
+
+  function updateSwitchUI(on){
+    if(!aiThemeSwitch) return;
+    aiThemeSwitch.setAttribute('data-on', on.toString());
+    aiThemeSwitch.setAttribute('aria-checked', on.toString());
+  }
+
+  function applyThemeColors(preset){
+    if(!preset || !preset.colors) return;
+    const colors = preset.colors;
+    Object.entries(themeVariableMap).forEach(([key, cssVar]) => {
+      if(colors[key]){ rootEl.style.setProperty(cssVar, colors[key]); }
+    });
+    const brandColors = (colors.brand_colors || []).filter(Boolean);
+    const fallbackColors = defaultTheme.colors.brand_colors;
+    for(let i = 0; i < 5; i++){
+      const value = brandColors[i] || brandColors[brandColors.length - 1] || fallbackColors[i] || fallbackColors[0];
+      rootEl.style.setProperty(`--brand${i+1}`, value.trim());
+    }
+    activeThemeId = preset.id || activeThemeId;
+  }
+
+  function renderThemeGallery(){
+    if(!themeGalleryGrid) return;
+    themeGalleryGrid.innerHTML = '';
+    if(!themePresets.length){
+      const empty = document.createElement('div');
+      empty.className = 'small';
+      empty.dataset.empty = 'true';
+      empty.textContent = 'No saved themes yet — generate one!';
+      themeGalleryGrid.appendChild(empty);
+      return;
+    }
+    const sorted = [...themePresets].sort((a,b)=> (b.created_at || 0) - (a.created_at || 0));
+    sorted.forEach(preset => {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'theme-card' + (preset.id === activeThemeId ? ' active' : '');
+
+      const swatch = document.createElement('div');
+      swatch.className = 'theme-card__swatch';
+      if(preset.screenshot){
+        const img = new Image();
+        img.src = preset.screenshot;
+        img.alt = `${preset.name} preview`;
+        swatch.appendChild(img);
+      } else {
+        const fallback = document.createElement('div');
+        fallback.className = 'swatch-fallback';
+        const colours = (preset.colors?.brand_colors || []).slice(0,5);
+        while(colours.length < 5){ colours.push('#222'); }
+        colours.forEach(col => {
+          const span = document.createElement('span');
+          span.style.background = col;
+          fallback.appendChild(span);
+        });
+        swatch.appendChild(fallback);
+      }
+
+      const meta = document.createElement('div');
+      meta.className = 'theme-card__meta';
+      const title = document.createElement('div');
+      title.className = 'theme-card__name';
+      title.textContent = preset.name || 'Untitled Theme';
+      const when = document.createElement('div');
+      when.className = 'theme-card__date';
+      if(preset.created_at){
+        const date = new Date(preset.created_at * 1000);
+        when.textContent = date.toLocaleString();
+      }
+      meta.appendChild(title);
+      meta.appendChild(when);
+
+      card.appendChild(swatch);
+      card.appendChild(meta);
+      card.addEventListener('click', () => {
+        applyThemeColors(preset);
+        suppressSwitchHandler = true;
+        updateSwitchUI(true);
+        suppressSwitchHandler = false;
+        toast(`Theme “${preset.name}” applied`);
+        activeThemeId = preset.id;
+        renderThemeGallery();
+      });
+
+      themeGalleryGrid.appendChild(card);
+    });
+  }
+
+  async function captureAndUploadScreenshot(preset){
+    if(!window.html2canvas || !preset?.id) return;
+    try{
+      await new Promise(resolve => setTimeout(resolve, 250));
+      const target = document.querySelector('.app') || document.body;
+      const canvas = await html2canvas(target, { backgroundColor: null, scale: 0.5, useCORS: true });
+      const dataUrl = canvas.toDataURL('image/png');
+      const res = await fetch(`/api/themes/${preset.id}/screenshot`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ image: dataUrl })
+      });
+      if(res.ok){
+        preset.screenshot = dataUrl;
+        const idx = themePresets.findIndex(p => p.id === preset.id);
+        if(idx !== -1){ themePresets[idx].screenshot = dataUrl; }
+        renderThemeGallery();
+      }
+    } catch(err){
+      console.error('Failed to capture theme screenshot', err);
+    }
+  }
+
+  async function requestNewThemePreset(){
+    if(isGeneratingTheme) return;
+    isGeneratingTheme = true;
+    llmThemeGenerate?.setAttribute('disabled', 'true');
+    if(llmThemeGenerate){ llmThemeGenerate.dataset.label = llmThemeGenerate.textContent; llmThemeGenerate.textContent = 'Asking LLM…'; }
+    aiThemeSwitch?.classList.add('loading');
+    try{
+      const res = await fetch('/api/themes/generate', { method:'POST' });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const preset = data?.preset;
+      if(!preset){ throw new Error('Missing preset payload'); }
+      themePresets = themePresets.filter(p => p.id !== preset.id);
+      themePresets.push(preset);
+      applyThemeColors(preset);
+      activeThemeId = preset.id;
+      renderThemeGallery();
+      toast(`New theme “${preset.name}” loaded`);
+      await captureAndUploadScreenshot(preset);
+    } catch(err){
+      console.error('Theme generation failed', err);
+      toast('LLM theme failed — reverted to default');
+      applyThemeColors(defaultTheme);
+      activeThemeId = defaultTheme.id;
+      suppressSwitchHandler = true;
+      updateSwitchUI(false);
+      suppressSwitchHandler = false;
+    } finally {
+      aiThemeSwitch?.classList.remove('loading');
+      if(llmThemeGenerate){
+        llmThemeGenerate.textContent = llmThemeGenerate.dataset.label || 'New LLM Theme';
+        llmThemeGenerate.removeAttribute('disabled');
+      }
+      isGeneratingTheme = false;
+    }
+  }
+
+  async function fetchThemePresets(){
+    try{
+      const res = await fetch('/api/themes');
+      if(!res.ok) return;
+      const data = await res.json();
+      themePresets = Array.isArray(data?.presets) ? data.presets : [];
+      renderThemeGallery();
+    } catch(err){
+      console.error('Failed to load saved themes', err);
+    }
+  }
+
+  function openThemeGallery(){
+    if(!themeGallery) return;
+    themeGallery.classList.add('visible');
+    themeGallery.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeThemeGallery(){
+    if(!themeGallery) return;
+    themeGallery.classList.remove('visible');
+    themeGallery.setAttribute('aria-hidden', 'true');
+  }
+
+  function handleSwitchToggle(){
+    if(!aiThemeSwitch || suppressSwitchHandler) return;
     const on = aiThemeSwitch.getAttribute('data-on') === 'true';
-    aiThemeSwitch.setAttribute('data-on', (!on).toString());
-    aiThemeSwitch.setAttribute('aria-checked', (!on).toString());
-    mainPanel.classList.toggle('ai-themed', !on);
-    toast('AI Dynamic Theme: ' + (!on ? 'ON' : 'OFF'));
+    if(on){
+      updateSwitchUI(false);
+      applyThemeColors(defaultTheme);
+      activeThemeId = defaultTheme.id;
+      toast('LLM theme disabled');
+      renderThemeGallery();
+    } else {
+      updateSwitchUI(true);
+      requestNewThemePreset();
+    }
+  }
+
+  aiThemeSwitch?.addEventListener('click', handleSwitchToggle);
+  aiThemeSwitch?.addEventListener('keydown', (e) => {
+    if(e.key === ' ' || e.key === 'Spacebar' || e.key === 'Enter'){
+      e.preventDefault();
+      handleSwitchToggle();
+    }
   });
+
+  llmThemeGenerate?.addEventListener('click', () => {
+    suppressSwitchHandler = true;
+    updateSwitchUI(true);
+    suppressSwitchHandler = false;
+    requestNewThemePreset();
+  });
+
+  themeGalleryBtn?.addEventListener('click', () => {
+    renderThemeGallery();
+    openThemeGallery();
+  });
+  themeGalleryClose?.addEventListener('click', closeThemeGallery);
+  themeGalleryBackdrop?.addEventListener('click', closeThemeGallery);
+  document.addEventListener('keydown', (e) => {
+    if(e.key === 'Escape' && themeGallery?.classList.contains('visible')){
+      closeThemeGallery();
+    }
+  });
+
+  fetchThemePresets();
 </script>
 </body>
 </html>

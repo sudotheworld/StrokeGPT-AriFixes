@@ -173,6 +173,44 @@ Return ONLY a JSON object with the key "pattern_name". Example: {{"pattern_name"
         response = self._talk_to_llm([{"role": "system", "content": prompt}], temperature=0.8)
         return response.get("pattern_name", "Unnamed Move")
 
+    def generate_theme_palette(self, existing_names=None):
+        """Ask the LLM to design a UI theme palette.
+
+        Returns a dictionary with the theme name and associated colors.
+        """
+        existing_names = existing_names or []
+        avoid_clause = ""
+        if existing_names:
+            avoid_clause = (
+                "Avoid reusing or closely mimicking any of these theme names: "
+                + ", ".join(existing_names[:10])
+            )
+
+        prompt = f"""
+You are an art director who specialises in futuristic UI themes.
+Generate a distinctive colour palette suitable for a web dashboard.
+{avoid_clause}
+Respond ONLY with JSON using this structure:
+{{
+  "theme_name": "<short unique name>",
+  "background": "<CSS colour or gradient>",
+  "glass": "<rgba colour for glass panels>",
+  "glass_strong": "<rgba colour for emphasized panels>",
+  "text": "<primary text colour>",
+  "muted": "<muted text colour>",
+  "edge": "<rgba border glow>",
+  "brand_colors": ["#hex1", "#hex2", "#hex3", "#hex4", "#hex5"],
+  "ok": "<success colour>",
+  "warn": "<warning colour>",
+  "bad": "<error colour>"
+}}
+All colours must be valid CSS colour strings. Keep brand_colors length to at least five items.
+"""
+        response = self._talk_to_llm([
+            {"role": "system", "content": prompt}
+        ], temperature=0.6)
+        return response
+
     def consolidate_user_profile(self, chat_chunk, current_profile):
         print("🧠 Updating user profile...")
         chat_log_text = "\n".join(f'role: {x["role"]}, content: {x["content"]}' for x in chat_chunk)

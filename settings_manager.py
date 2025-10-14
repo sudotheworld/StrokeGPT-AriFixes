@@ -29,6 +29,7 @@ class SettingsManager:
         self.milking_max_time = 4.5
         self.edging_min_time = 5.0
         self.edging_max_time = 8.0
+        self.theme_presets = []
 
     def _get_default_profile(self):
         return {"name": "Unknown", "likes": [], "dislikes": [], "key_memories": []}
@@ -61,6 +62,7 @@ class SettingsManager:
             self.milking_max_time = data.get("milking_max_time", 4.5)
             self.edging_min_time = data.get("edging_min_time", 5.0)
             self.edging_max_time = data.get("edging_max_time", 8.0)
+            self.theme_presets = data.get("theme_presets", [])
             print("✅ Loaded settings from my_settings.json")
         except Exception as e:
             print(f"⚠️ Couldn't read settings file, using defaults. Error: {e}")
@@ -92,5 +94,7 @@ class SettingsManager:
                 "auto_min_time": self.auto_min_time, "auto_max_time": self.auto_max_time,
                 "milking_min_time": self.milking_min_time, "milking_max_time": self.milking_max_time,
                 "edging_min_time": self.edging_min_time, "edging_max_time": self.edging_max_time,
+                "theme_presets": self.theme_presets,
             }
             self.file_path.write_text(json.dumps(settings_dict, indent=2))
+

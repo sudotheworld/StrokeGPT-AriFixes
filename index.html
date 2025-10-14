@@ -217,12 +217,21 @@
         const pfpPreview = D.getElementById('ai-pfp-preview');
         const typingIndicatorPfp = D.getElementById('typing-indicator-pfp');
         const toggleSidebarBtn = D.getElementById('toggle-sidebar-btn');
+        const toggleMemoryBtn = D.getElementById('toggle-memory-btn');
         const imCloseBtn = D.getElementById('im-close-btn');
         const edgingModeBtn = D.getElementById('edging-mode-btn');
         const edgingTimer = D.getElementById('edging-timer');
         const easterEggOverlay = D.getElementById('easter-egg-overlay');
         const ctx = rhythmCanvas.getContext('2d');
         let myHandyKey = '', myPersonaDescription = '', aiName = 'BOT', edgingTimerInterval = null;
+        let longTermMemoryEnabled = true;
+
+        function updateMemoryButtonLabel(isEnabled) {
+            if (!toggleMemoryBtn) return;
+            toggleMemoryBtn.textContent = `Memories: ${isEnabled ? 'ON' : 'OFF'}`;
+        }
+
+        updateMemoryButtonLabel(longTermMemoryEnabled);
         
         async function apiCall(endpoint, options = {}) {
             try {
@@ -361,6 +370,10 @@
 
         async function startupCheck() {
             const data = await apiCall('/check_settings');
+            if (data && typeof data.use_long_term_memory === 'boolean') {
+                longTermMemoryEnabled = data.use_long_term_memory;
+            }
+            updateMemoryButtonLabel(longTermMemoryEnabled);
             if (data && data.configured) {
                 statusText.textContent = 'Welcome back! Settings loaded.';
                 myHandyKey = data.handy_key;
@@ -422,6 +435,38 @@
             localStorage.setItem('sidebar_collapsed', isCollapsed);
             setTimeout(resizeCanvas, 350);
         });
+        if (toggleMemoryBtn) {
+            toggleMemoryBtn.addEventListener('click', async () => {
+                if (toggleMemoryBtn.disabled) return;
+                const nextState = !longTermMemoryEnabled;
+                updateMemoryButtonLabel(nextState);
+                toggleMemoryBtn.disabled = true;
+                statusText.textContent = 'Updating memory preference...';
+                try {
+                    const response = await fetch('/api/memory/toggle', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ enabled: nextState })
+                    });
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    const result = await response.json();
+                    if (typeof result.use_long_term_memory !== 'boolean') {
+                        throw new Error('Invalid response payload');
+                    }
+                    longTermMemoryEnabled = result.use_long_term_memory;
+                    updateMemoryButtonLabel(longTermMemoryEnabled);
+                    statusText.textContent = `Long-term memory ${longTermMemoryEnabled ? 'enabled' : 'disabled'}.`;
+                } catch (error) {
+                    console.error('Failed to toggle memory preference', error);
+                    statusText.textContent = 'Error: Unable to update memory preference.';
+                    updateMemoryButtonLabel(longTermMemoryEnabled);
+                } finally {
+                    toggleMemoryBtn.disabled = false;
+                }
+            });
+        }
         pfpUploadInput.addEventListener('change', (event) => {
             const file = event.target.files[0];
             if (!file) return;

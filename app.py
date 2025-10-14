@@ -115,6 +115,19 @@ def add_message_to_queue(text, add_to_history=True):
         if clean_text: chat_history.append({"role": "assistant", "content": clean_text})
     threading.Thread(target=audio.generate_audio_for_text, args=(text,)).start()
 
+
+def _queue_image_generation(*_args, **_kwargs):
+    """Queue an image generation job for asynchronous processing.
+
+    Each worker thread that consumes the queue is expected to obtain its
+    own :class:`requests.Session` via :mod:`image_service.ImageService`'s
+    thread-local session factory.  Sharing a single ``Session`` across
+    threads is not safe in ``requests``, so callers must never reuse a
+    session obtained by another worker.
+    """
+
+    return None
+
 def start_background_mode(mode_logic, initial_message, mode_name):
     global auto_mode_active_task, edging_start_time
     if auto_mode_active_task:

@@ -6,9 +6,10 @@ import json
 import atexit
 import threading
 import time
+import uuid
 from collections import deque
 from pathlib import Path
-from flask import Flask, request, jsonify, render_template_string, send_file, send_from_directory
+from flask import Flask, request, jsonify, render_template_string, send_file, send_from_directory, abort
 from config import Config
 
 from settings_manager import SettingsManager
@@ -51,6 +52,100 @@ edging_start_time = None
 # A global instance of MemoryManager is created here.  It is used to
 # store events from the persona and recall context when building prompts.
 mem = MemoryManager()
+
+# Persona helpers -----------------------------------------------------------
+
+def _get_persona(persona_id: str):
+    for persona in settings.persona_presets:
+        if persona.get("id") == persona_id:
+            return persona
+    return None
+
+
+def _serialise_persona(persona: dict, active_id: str | None):
+    data = dict(persona)
+    data["is_active"] = persona.get("id") == active_id
+    return data
+
+# -------------------------------------------------------------------------
+# Persona preset endpoints
+
+
+@app.get("/api/personas")
+def list_personas():
+    active_id = settings.active_persona_id
+    if active_id is None and settings.persona_desc:
+        for persona in settings.persona_presets:
+            if persona.get("description") == settings.persona_desc:
+                active_id = persona.get("id")
+                break
+    personas = [_serialise_persona(p, active_id) for p in settings.persona_presets]
+    return jsonify({
+        "personas": personas,
+        "active_persona_id": active_id,
+        "active_persona_desc": settings.persona_desc,
+    })
+
+
+@app.post("/api/personas")
+def create_persona():
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "Unnamed").strip() or "Unnamed"
+    persona = {
+        "id": uuid.uuid4().hex,
+        "name": name,
+        "role": (data.get("role") or "").strip(),
+        "body_type": (data.get("body_type") or "").strip(),
+        "description": (data.get("description") or "").strip(),
+        "goal": (data.get("goal") or "").strip(),
+        "created_at": time.time(),
+    }
+    settings.persona_presets.append(persona)
+    settings.save()
+    user_id = request.remote_addr or "room"
+    summary = f"Persona created: {persona['name']}"
+    if persona["role"]:
+        summary += f" ({persona['role']})"
+    mem.add_event(user_id, summary, tags=["persona", "create"])
+    return jsonify({"ok": True, "persona": _serialise_persona(persona, settings.active_persona_id)}), 201
+
+
+@app.delete("/api/personas/<persona_id>")
+def delete_persona(persona_id: str):
+    persona = _get_persona(persona_id)
+    if not persona:
+        abort(404)
+    settings.persona_presets = [p for p in settings.persona_presets if p.get("id") != persona_id]
+    if settings.active_persona_id == persona_id:
+        settings.active_persona_id = None
+        settings.persona_desc = SettingsManager.DEFAULT_PERSONA_DESC
+    settings.save()
+    user_id = request.remote_addr or "room"
+    mem.add_event(user_id, f"Persona deleted: {persona.get('name', 'unknown')}", tags=["persona", "delete"])
+    return jsonify({"ok": True})
+
+
+@app.post("/api/personas/<persona_id>/activate")
+def activate_persona(persona_id: str):
+    persona = _get_persona(persona_id)
+    if not persona:
+        abort(404)
+    settings.active_persona_id = persona_id
+    settings.persona_desc = persona.get("description") or SettingsManager.DEFAULT_PERSONA_DESC
+    settings.save()
+    user_id = request.remote_addr or "room"
+    details = persona.get("role") or persona.get("body_type") or "persona"
+    mem.add_event(
+        user_id,
+        f"Persona activated: {persona.get('name', 'unknown')} ({details})",
+        tags=["persona", "activate"],
+    )
+    return jsonify({
+        "ok": True,
+        "active_persona_id": persona_id,
+        "persona": _serialise_persona(persona, persona_id),
+        "persona_desc": settings.persona_desc,
+    })
 
 # -------------------------------------------------------------------------
 # Feedback and A/B state persistence

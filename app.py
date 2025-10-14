@@ -345,6 +345,22 @@ def handle_user_message():
     data = request.json
     user_input = data.get('message', '').strip()
 
+    # Extract the optional response length control, clamping it to a
+    # reasonable positive range so we do not overwhelm the LLM or UI.
+    default_response_length = 2500
+    min_response_length = 250
+    max_response_length = 8000
+    response_length = default_response_length
+    raw_length = data.get('response_length')
+    if raw_length is not None:
+        try:
+            parsed_length = int(float(raw_length))
+            if parsed_length > 0:
+                response_length = max(min_response_length, min(max_response_length, parsed_length))
+        except (TypeError, ValueError):
+            # Fall back to the default when the value is not numeric.
+            response_length = default_response_length
+
     if (p := data.get('persona_desc')) and p != settings.persona_desc:
         settings.persona_desc = p; settings.save()
     if (k := data.get('key')) and k != settings.handy_key:
@@ -365,6 +381,7 @@ def handle_user_message():
     # Retrieve a rolling memory context for this user and supply it to the LLM via the context dict.
     user_id = request.remote_addr or "room"
     ctx = get_current_context()
+    ctx["response_length"] = response_length
     # Inject persona memory into the context if available.  The LLM will
     # incorporate this under a dedicated section in the system prompt.
     mem_block = mem.context(user_id)

@@ -24,23 +24,30 @@ class LLMService:
         self.url = url or f"{Config.OLLAMA_URL}/api/chat"
         self.model = model or Config.OLLAMA_MODEL
 
-    def _talk_to_llm(self, messages, temperature: float = 0.7):
+    def _talk_to_llm(self, messages, temperature: float = 0.7, response_char_limit: int | None = None):
         """Send a chat completion request to the LLM and parse JSON content.
 
         Uses a persistent session with retries and configurable timeouts. If the
         response format differs between Ollama versions, this method attempts to
         extract the content gracefully.
         """
+        options = {
+            "temperature": temperature,
+            "top_p": 0.95,
+            "repeat_penalty": 1.2,
+            "repeat_penalty_last_n": 40,
+        }
+        if response_char_limit and response_char_limit > 0:
+            # Approximate a reasonable token limit from the desired character
+            # length to give the upstream model another guardrail.
+            approx_tokens = max(64, min(8192, int(response_char_limit // 3)))
+            options["num_predict"] = approx_tokens
+
         payload = {
             "model": self.model,
             "stream": False,
             "format": "json",
-            "options": {
-                "temperature": temperature,
-                "top_p": 0.95,
-                "repeat_penalty": 1.2,
-                "repeat_penalty_last_n": 40,
-            },
+            "options": options,
             "messages": messages,
         }
         try:
@@ -156,13 +163,31 @@ Your current mood is '{context.get('current_mood')}'. Handy is at {context.get('
         # the prompt so they complement the long‑term memory JSON.
         if context.get('persona_memory'):
             prompt_text += "\n### YOUR NOTES ABOUT ME:\n" + context.get('persona_memory')
-        
+
+        response_length = context.get('response_length')
+        try:
+            response_length = int(response_length)
+        except (TypeError, ValueError):
+            response_length = None
+        if response_length and response_length > 0:
+            prompt_text += (
+                "\n### RESPONSE LENGTH LIMIT:\n"
+                f"Keep your entire reply under {response_length} characters, including the JSON structure."
+            )
+
         return prompt_text
 
     def get_chat_response(self, chat_history, context, temperature=0.7):
         system_prompt = self._build_system_prompt(context)
         messages = [{"role": "system", "content": system_prompt}, *list(chat_history)]
-        return self._talk_to_llm(messages, temperature)
+        response_char_limit = context.get("response_length")
+        try:
+            response_char_limit = int(response_char_limit)
+        except (TypeError, ValueError):
+            response_char_limit = None
+        if response_char_limit is not None and response_char_limit <= 0:
+            response_char_limit = None
+        return self._talk_to_llm(messages, temperature, response_char_limit=response_char_limit)
 
     def name_this_move(self, speed, depth, mood):
         prompt = f"""

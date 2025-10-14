@@ -1,6 +1,11 @@
+from __future__ import annotations
+
 import json
+from typing import Any, Dict, List
+
 import requests
 from requests.adapters import HTTPAdapter, Retry
+
 from config import Config
 
 # Create a reusable session with retry logic for all LLM calls.
@@ -156,7 +161,12 @@ Your current mood is '{context.get('current_mood')}'. Handy is at {context.get('
         # the prompt so they complement the long‑term memory JSON.
         if context.get('persona_memory'):
             prompt_text += "\n### YOUR NOTES ABOUT ME:\n" + context.get('persona_memory')
-        
+
+        if context.get('funscript_insights'):
+            prompt_text += "\n### FUNSCRIPT INSIGHTS FROM MY LIBRARY:\n"
+            insights: List[str] = context.get('funscript_insights') or []
+            prompt_text += "\n".join(f"- {item}" for item in insights)
+
         return prompt_text
 
     def get_chat_response(self, chat_history, context, temperature=0.7):
@@ -207,3 +217,70 @@ Now, perform the analysis and return the updated JSON object.
         except Exception as e:
             print(f"⚠️ Profile update failed: {e}")
             return current_profile
+
+    def analyze_funscript_patterns(self, metrics: Dict[str, Any], segments: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Return a structured description for a FunScript entry."""
+
+        safe_segments = segments[:12]
+        prompt = f"""
+You are an erotic motion dramaturge tasked with analysing stroking patterns extracted from a FunScript file. Based on the
+numeric data provided, produce a concise description that helps a partner understand the vibe of this script.
+
+- Keep the tone practical and sensual.
+- Infer likely moods or scenarios where this script excels.
+- Suggest one to three signature move names inspired by the tempo or intensity shifts you observe.
+
+Return ONLY valid JSON with the following structure:
+{{
+  "summary": "one or two vivid sentences",
+  "style_tags": ["short", "lowercase", "tags"],
+  "signature_moves": [
+    {{"label": "Move name", "segment_index": <int>, "description": "short sensory hook">}}
+  ]
+}}
+
+Metrics JSON:
+{json.dumps(metrics, ensure_ascii=False, indent=2)}
+
+Segment windows (ms timeline origin at 0):
+{json.dumps(safe_segments, ensure_ascii=False, indent=2)}
+"""
+
+        try:
+            result = self._talk_to_llm([
+                {"role": "system", "content": prompt}
+            ], temperature=0.2)
+        except Exception as exc:  # pragma: no cover - network failure guard
+            print(f"⚠️ FunScript analysis failed: {exc}")
+            result = {}
+
+        if not isinstance(result, dict):
+            result = {}
+
+        summary = result.get("summary") or "A steady stroking pattern with teasing ebb and flow."
+        tags = result.get("style_tags") or ["teasing", "steady"]
+        signature_moves = result.get("signature_moves") or [
+            {"label": "Velvet Glide", "segment_index": 0, "description": "Slow build with warm depth sweeps."}
+        ]
+
+        def _clean_move(move: Dict[str, Any], fallback_index: int) -> Dict[str, Any]:
+            label = move.get("label") or "Unnamed Move"
+            description = move.get("description") or "Sensual pacing with steady depth."
+            try:
+                seg_index = int(move.get("segment_index", fallback_index))
+            except (TypeError, ValueError):
+                seg_index = fallback_index
+            return {"label": label, "description": description, "segment_index": seg_index}
+
+        cleaned_moves = [_clean_move(m, i) for i, m in enumerate(signature_moves[:5])]
+
+        if isinstance(tags, list):
+            cleaned_tags = [str(tag).strip().lower() for tag in tags if str(tag).strip()]
+        else:
+            cleaned_tags = [str(tags).strip().lower()]
+
+        return {
+            "summary": str(summary).strip(),
+            "style_tags": cleaned_tags,
+            "signature_moves": cleaned_moves,
+        }

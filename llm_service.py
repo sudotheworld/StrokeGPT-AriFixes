@@ -173,6 +173,42 @@ Return ONLY a JSON object with the key "pattern_name". Example: {{"pattern_name"
         response = self._talk_to_llm([{"role": "system", "content": prompt}], temperature=0.8)
         return response.get("pattern_name", "Unnamed Move")
 
+    def analyse_funscript(self, catalog_entry: dict, temperature: float = 0.55) -> dict:
+        """Ask the LLM to produce a grounded description for a FunScript."""
+
+        if not isinstance(catalog_entry, dict):
+            return {"title": "Unknown FunScript", "description": "No catalog entry provided."}
+
+        payload = {
+            "title": catalog_entry.get("metadata", {}).get("title") or catalog_entry.get("uuid"),
+            "metrics": catalog_entry.get("metrics", {}),
+            "climax_cues": catalog_entry.get("metrics", {}).get("climax_cues", []),
+        }
+        try:
+            prompt = """
+You are an expert stroke pattern critic. Given the measured metrics below, craft a concise description and useful tags for this FunScript.
+Always stay grounded in the provided numbers—do not invent timings or speeds that are not implied.
+Respond ONLY with JSON using this shape:
+{"title": "<keep or improve the title>", "description": "<2-3 sentence grounded summary>", "tempo_notes": "<tempo observation>", "climax_notes": "<climax guidance>", "tags": ["tag", ...]}
+Keep each sentence under 35 words and prefer lower-case tags.
+"""
+            messages = [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ]
+        except (TypeError, ValueError):
+            return {"title": payload.get("title", "FunScript"), "description": "Unable to serialise metrics for analysis."}
+
+        response = self._talk_to_llm(messages, temperature=temperature)
+        if not isinstance(response, dict):
+            return {"title": payload.get("title", "FunScript"), "description": "LLM response was not JSON."}
+        response.setdefault("title", payload.get("title", "FunScript"))
+        response.setdefault("description", "")
+        response.setdefault("tempo_notes", "")
+        response.setdefault("climax_notes", "")
+        response.setdefault("tags", [])
+        return response
+
     def consolidate_user_profile(self, chat_chunk, current_profile):
         print("🧠 Updating user profile...")
         chat_log_text = "\n".join(f'role: {x["role"]}, content: {x["content"]}' for x in chat_chunk)

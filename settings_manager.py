@@ -2,13 +2,16 @@ import json
 from pathlib import Path
 import threading
 
+from config import Config
+
 class SettingsManager:
     def __init__(self, settings_file_path):
         self.file_path = Path(settings_file_path)
         self._save_lock = threading.Lock()
 
         # Default values
-        self.handy_key = ""
+        self.handy_key = Config.HANDY_KEY
+        self.device_type = Config.DEVICE_TYPE or "handy"
         self.ai_name = "BOT" # New field
         self.persona_desc = "An energetic and passionate girlfriend"
         self.profile_picture_b64 = ""
@@ -29,6 +32,10 @@ class SettingsManager:
         self.milking_max_time = 4.5
         self.edging_min_time = 5.0
         self.edging_max_time = 8.0
+        self.lovense_domain = Config.LOVENSE_DOMAIN
+        self.lovense_port = Config.LOVENSE_PORT
+        self.lovense_token = Config.LOVENSE_TOKEN
+        self.lovense_secure = Config.LOVENSE_SECURE
 
     def _get_default_profile(self):
         return {"name": "Unknown", "likes": [], "dislikes": [], "key_memories": []}
@@ -41,7 +48,8 @@ class SettingsManager:
 
         try:
             data = json.loads(self.file_path.read_text())
-            self.handy_key = data.get("handy_key", "")
+            self.handy_key = data.get("handy_key", self.handy_key)
+            self.device_type = data.get("device_type", self.device_type)
             self.ai_name = data.get("ai_name", "BOT") # Load name
             self.persona_desc = data.get("persona_desc", "An energetic and passionate girlfriend")
             self.profile_picture_b64 = data.get("profile_picture_b64", "")
@@ -61,6 +69,10 @@ class SettingsManager:
             self.milking_max_time = data.get("milking_max_time", 4.5)
             self.edging_min_time = data.get("edging_min_time", 5.0)
             self.edging_max_time = data.get("edging_max_time", 8.0)
+            self.lovense_domain = data.get("lovense_domain", self.lovense_domain)
+            self.lovense_port = data.get("lovense_port", self.lovense_port)
+            self.lovense_token = data.get("lovense_token", self.lovense_token)
+            self.lovense_secure = data.get("lovense_secure", self.lovense_secure)
             print("✅ Loaded settings from my_settings.json")
         except Exception as e:
             print(f"⚠️ Couldn't read settings file, using defaults. Error: {e}")
@@ -81,6 +93,7 @@ class SettingsManager:
 
             settings_dict = {
                 "handy_key": self.handy_key,
+                "device_type": self.device_type,
                 "ai_name": self.ai_name, # Save name
                 "persona_desc": self.persona_desc,
                 "profile_picture_b64": self.profile_picture_b64,
@@ -92,5 +105,9 @@ class SettingsManager:
                 "auto_min_time": self.auto_min_time, "auto_max_time": self.auto_max_time,
                 "milking_min_time": self.milking_min_time, "milking_max_time": self.milking_max_time,
                 "edging_min_time": self.edging_min_time, "edging_max_time": self.edging_max_time,
+                "lovense_domain": self.lovense_domain,
+                "lovense_port": self.lovense_port,
+                "lovense_token": self.lovense_token,
+                "lovense_secure": self.lovense_secure,
             }
             self.file_path.write_text(json.dumps(settings_dict, indent=2))

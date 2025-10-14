@@ -99,6 +99,7 @@
         #message-input-line .input-text { flex-grow: 1; }
 
         .audio-toggle-line { display: flex; align-items: center; gap: 8px; padding-top: 10px; }
+        .checkbox-line { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 0.9em; }
 
         #status-text { margin-top: 15px; font-size: 0.9em; text-align: center; color: var(--purple); }
         #setup-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: none; align-items: center; justify-content: center; z-index: 9999; color: var(--foreground); }
@@ -168,6 +169,26 @@
             <button id="set-persona-btn" class="my-button" style="margin-top: 10px;">Set Persona</button>
         </div>
         <div class="setting-section">
+            <h3>Device</h3>
+            <label for="device-type-select" style="display:block; margin-bottom:8px;">Device Type</label>
+            <select id="device-type-select" class="select-box">
+                <option value="handy">The Handy</option>
+                <option value="lovense">Lovense</option>
+            </select>
+            <button id="save-device-type-btn" class="my-button" style="margin-top: 10px;">Set Device</button>
+            <div id="handy-config-block" style="margin-top: 12px;">
+                <input type="password" id="handy-key-input" class="input-text" placeholder="Handy Connection Key">
+                <button id="save-handy-key-btn" class="my-button" style="margin-top: 10px;">Save Handy Key</button>
+            </div>
+            <div id="lovense-config-block" style="margin-top: 12px; display: none;">
+                <input type="text" id="lovense-host-input" class="input-text" placeholder="Lovense host (e.g. 127.0.0.1)">
+                <input type="number" id="lovense-port-input" class="input-text" placeholder="Port" min="1" max="65535" value="20010" style="margin-top: 8px;">
+                <label class="checkbox-line"><input type="checkbox" id="lovense-secure-checkbox"> Use HTTPS</label>
+                <input type="password" id="lovense-token-input" class="input-text" placeholder="Lovense token" style="margin-top: 8px;">
+                <button id="save-lovense-btn" class="my-button" style="margin-top: 10px;">Save Lovense Settings</button>
+            </div>
+        </div>
+        <div class="setting-section">
             <h3>Mode Timings (Seconds)</h3>
             <div class="timing-row"><label for="auto-min-time">Auto:</label><input type="number" id="auto-min-time" min="1" max="60" step="1" value="4"><span>-</span><input type="number" id="auto-max-time" min="1" max="60" step="1" value="7"></div>
             <div class="timing-row"><label for="edging-min-time">Edging:</label><input type="number" id="edging-min-time" min="1" max="60" step="1" value="5"><span>-</span><input type="number" id="edging-max-time" min="1" max="60" step="1" value="8"></div>
@@ -200,6 +221,17 @@
         const D = document;
         const userChatInput = D.getElementById('user-chat-input');
         const personaInput = D.getElementById('persona-input');
+        const deviceTypeSelect = D.getElementById('device-type-select');
+        const saveDeviceTypeBtn = D.getElementById('save-device-type-btn');
+        const handyKeyInput = D.getElementById('handy-key-input');
+        const saveHandyKeyBtn = D.getElementById('save-handy-key-btn');
+        const handyConfigBlock = D.getElementById('handy-config-block');
+        const lovenseConfigBlock = D.getElementById('lovense-config-block');
+        const lovenseHostInput = D.getElementById('lovense-host-input');
+        const lovensePortInput = D.getElementById('lovense-port-input');
+        const lovenseSecureCheckbox = D.getElementById('lovense-secure-checkbox');
+        const lovenseTokenInput = D.getElementById('lovense-token-input');
+        const saveLovenseBtn = D.getElementById('save-lovense-btn');
         const setPersonaBtn = D.getElementById('set-persona-btn');
         const aiNameInput = D.getElementById('ai-name-input');
         const setAiNameBtn = D.getElementById('set-ai-name-btn');
@@ -222,7 +254,10 @@
         const edgingTimer = D.getElementById('edging-timer');
         const easterEggOverlay = D.getElementById('easter-egg-overlay');
         const ctx = rhythmCanvas.getContext('2d');
-        let myHandyKey = '', myPersonaDescription = '', aiName = 'BOT', edgingTimerInterval = null;
+        let currentDeviceType = 'handy';
+        let myHandyKey = '';
+        let myLovenseConfig = { token: '', domain: '127.0.0.1', port: 20010, secure: false };
+        let myPersonaDescription = '', aiName = 'BOT', edgingTimerInterval = null;
         
         async function apiCall(endpoint, options = {}) {
             try {
@@ -262,7 +297,13 @@
                 D.querySelector('#typing-indicator .speaker-name').textContent = aiName;
                 typingIndicator.style.display = 'flex';
                 chatView.scrollTop = chatView.scrollHeight;
-                await apiCall('/send_message', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: message, key: myHandyKey, persona_desc: myPersonaDescription }) });
+                const payload = { message, persona_desc: myPersonaDescription, device_type: currentDeviceType };
+                if (currentDeviceType === 'handy') {
+                    payload.handy_key = myHandyKey;
+                } else if (currentDeviceType === 'lovense') {
+                    payload.lovense = { ...myLovenseConfig };
+                }
+                await apiCall('/send_message', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             }
         }
 
@@ -272,10 +313,12 @@
             rhythmCanvas.height = rhythmCanvas.parentElement.clientHeight;
         }
 
-        function drawHandyVisualizer(speed, depth) {
+        function drawDeviceVisualizer(speed, depth) {
             const width = rhythmCanvas.width, height = rhythmCanvas.height;
             if (width === 0 || height === 0) return;
             const barHeight = (height / 2) - 4;
+            const topLabel = currentDeviceType === 'lovense' ? 'Intensity' : 'Speed';
+            const bottomLabel = currentDeviceType === 'lovense' ? 'Stroke' : 'Depth';
             ctx.clearRect(0, 0, width, height);
             ctx.font = "12px sans-serif";
             ctx.fillStyle = 'rgba(255, 85, 85, 0.3)';
@@ -283,13 +326,25 @@
             ctx.fillStyle = 'var(--red)';
             ctx.fillRect(0, 0, (speed / 100) * width, barHeight);
             ctx.fillStyle = 'white';
-            ctx.fillText(`Speed: ${speed}%`, 5, barHeight / 2 + 5);
+            ctx.fillText(`${topLabel}: ${Math.round(speed)}%`, 5, barHeight / 2 + 5);
             ctx.fillStyle = 'rgba(255, 184, 108, 0.3)';
             ctx.fillRect(0, height / 2 + 4, width, barHeight);
             ctx.fillStyle = '#ffb86c';
             ctx.fillRect(0, height / 2 + 4, (depth / 100) * width, barHeight);
             ctx.fillStyle = 'white';
-            ctx.fillText(`Depth: ${depth}%`, 5, height - (barHeight/2) + 5);
+            ctx.fillText(`${bottomLabel}: ${Math.round(depth)}%`, 5, height - (barHeight/2) + 5);
+        }
+
+        function updateDeviceUI(selectedType = currentDeviceType) {
+            currentDeviceType = selectedType;
+            deviceTypeSelect.value = selectedType;
+            if (selectedType === 'lovense') {
+                lovenseConfigBlock.style.display = 'block';
+                handyConfigBlock.style.display = 'none';
+            } else {
+                lovenseConfigBlock.style.display = 'none';
+                handyConfigBlock.style.display = 'block';
+            }
         }
 
         function startEdgingTimer() {
@@ -313,49 +368,176 @@
         function renderSetup(isReturningUser = false, data = {}) {
             setupOverlay.style.display = 'flex';
             let step = isReturningUser ? 2 : 1;
-            
+            let setupDeviceType = data.device_type || currentDeviceType || 'handy';
+            let tempLovense = {
+                domain: data.lovense?.domain || myLovenseConfig.domain || '127.0.0.1',
+                port: data.lovense?.port || myLovenseConfig.port || 20010,
+                secure: typeof data.lovense?.secure === 'boolean' ? data.lovense.secure : myLovenseConfig.secure,
+                token: data.lovense?.token || myLovenseConfig.token || '',
+            };
+
+            function showDeviceStep() {
+                const handyValue = myHandyKey || data.handy_key || '';
+                setupBox.innerHTML = `
+                    <h2>Step 1: Device Setup</h2>
+                    <p>Select your device and enter the required connection details.</p>
+                    <label for="setup-device-type" style="display:block; margin-bottom:8px;">Device Type</label>
+                    <select id="setup-device-type" class="select-box">
+                        <option value="handy">The Handy</option>
+                        <option value="lovense">Lovense</option>
+                    </select>
+                    <div id="setup-handy-fields" style="margin-top:12px;">
+                        <input type="password" id="setup-handy-key" class="input-text" placeholder="Handy Connection Key" value="${handyValue}">
+                    </div>
+                    <div id="setup-lovense-fields" style="margin-top:12px; display:none;">
+                        <input type="text" id="setup-lovense-host" class="input-text" placeholder="Lovense host" value="${tempLovense.domain}">
+                        <input type="number" id="setup-lovense-port" class="input-text" placeholder="Port" value="${tempLovense.port}" min="1" max="65535" style="margin-top:8px;">
+                        <label class="checkbox-line"><input type="checkbox" id="setup-lovense-secure"${tempLovense.secure ? ' checked' : ''}> Use HTTPS</label>
+                        <input type="password" id="setup-lovense-token" class="input-text" placeholder="Lovense token" value="${tempLovense.token}" style="margin-top:8px;">
+                    </div>
+                    <button id="setup-next" class="my-button" style="margin-top:15px;">Next</button>`;
+
+                const typeSelect = D.getElementById('setup-device-type');
+                const handyFields = D.getElementById('setup-handy-fields');
+                const lovenseFields = D.getElementById('setup-lovense-fields');
+                const updateVisibility = () => {
+                    if (typeSelect.value === 'lovense') {
+                        handyFields.style.display = 'none';
+                        lovenseFields.style.display = 'block';
+                    } else {
+                        handyFields.style.display = 'block';
+                        lovenseFields.style.display = 'none';
+                    }
+                };
+                typeSelect.value = setupDeviceType;
+                updateVisibility();
+                typeSelect.onchange = updateVisibility;
+
+                D.getElementById('setup-next').onclick = async () => {
+                    const chosen = typeSelect.value;
+                    const typeResp = await apiCall('/set_device_type', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_type: chosen }) });
+                    if (!typeResp || typeResp.status !== 'success') {
+                        statusText.textContent = 'Unable to set device type. Please try again.';
+                        return;
+                    }
+
+                    if (chosen === 'handy') {
+                        const key = D.getElementById('setup-handy-key').value.trim();
+                        if (!key) {
+                            statusText.textContent = 'Please enter your Handy key to continue.';
+                            return;
+                        }
+                        const res = await apiCall('/set_handy_key', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
+                        if (!res || res.status !== 'success') return;
+                        myHandyKey = key;
+                        setupDeviceType = 'handy';
+                        currentDeviceType = 'handy';
+                        statusText.textContent = 'Handy connected successfully!';
+                    } else {
+                        const host = D.getElementById('setup-lovense-host').value.trim() || '127.0.0.1';
+                        const portVal = parseInt(D.getElementById('setup-lovense-port').value, 10) || 20010;
+                        const secureVal = D.getElementById('setup-lovense-secure').checked;
+                        const tokenVal = D.getElementById('setup-lovense-token').value.trim() || tempLovense.token;
+                        if (!tokenVal) {
+                            statusText.textContent = 'Lovense token is required to continue.';
+                            return;
+                        }
+                        const payload = { token: tokenVal, domain: host, port: portVal, secure: secureVal };
+                        const res = await apiCall('/set_lovense_connection', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                        if (!res || res.status !== 'success') return;
+                        tempLovense = { token: tokenVal, domain: host, port: portVal, secure: secureVal };
+                        myLovenseConfig = { ...tempLovense };
+                        setupDeviceType = 'lovense';
+                        currentDeviceType = 'lovense';
+                        statusText.textContent = 'Lovense connection saved!';
+                    }
+
+                    updateDeviceUI(currentDeviceType);
+                    step = 2;
+                    displayStep();
+                };
+            }
+
+            function showPersonaStep() {
+                setupBox.innerHTML = `<h2>Step 2: Persona</h2><p>Describe your AI partner for this session.</p><input type="text" id="setup-persona" class="input-text" value="${data.persona || 'An energetic and passionate girlfriend'}" placeholder="Describe persona"><br><button id="setup-next" class="my-button">Next</button>`;
+                D.getElementById('setup-next').onclick = () => {
+                    personaInput.value = D.getElementById('setup-persona').value.trim();
+                    if (isReturningUser) {
+                        setupOverlay.style.display = 'none';
+                        sendUserMessage('');
+                        return;
+                    }
+                    if (setupDeviceType === 'handy') {
+                        step = 3;
+                        displayStep();
+                    } else {
+                        setupOverlay.style.display = 'none';
+                        statusText.textContent = 'Setup complete. Ready to chat.';
+                    }
+                };
+            }
+
+            function showDepthStep(currentStep) {
+                const title = currentStep === 3 ? 'Set the Tip' : 'Set the Base';
+                const btnText = currentStep === 3 ? 'Set Tip' : 'Next';
+                setupBox.innerHTML = `<h2>Step ${currentStep}: ${title}</h2><p>Move the Handy to the desired position and click '${btnText}'.</p><div><button id="d-down" class="my-button" style="width:auto;">&lt;&lt; Out</button><span id="d-val" style="padding:0 15px;">?</span>%<button id="d-up" class="my-button" style="width:auto;">In &gt;&gt;</button></div><button id="set-pos" class="my-button">${btnText}</button>`;
+                let currentDepth = 50;
+                const updateDepthDisplay = (val) => D.getElementById('d-val').textContent = val;
+                const nudge = async (dir) => {
+                    const res = await apiCall('/nudge', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({direction:dir})});
+                    if (res && res.depth_percent !== undefined) { currentDepth = res.depth_percent; updateDepthDisplay(currentDepth); }
+                };
+                D.getElementById('d-up').onclick = () => nudge('up');
+                D.getElementById('d-down').onclick = () => nudge('down');
+                D.getElementById('set-pos').onclick = async () => {
+                    if (currentStep === 3) {
+                        D.minDepth = currentDepth;
+                        step = 4;
+                        displayStep();
+                    } else {
+                        D.maxDepth = currentDepth;
+                        await apiCall('/set_depth_limits', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({min_depth:D.minDepth, max_depth:D.maxDepth})});
+                        step = 5;
+                        displayStep();
+                    }
+                };
+            }
+
+            function showSpeedStep(currentStep) {
+                const title = currentStep === 5 ? 'Minimum Speed' : 'Maximum Speed';
+                const defaultVal = currentStep === 5 ? 10 : 80;
+                setupBox.innerHTML = `<h2>Step ${currentStep}: Set ${title}</h2><p>Choose your preferred ${title.toLowerCase()}.</p><div class="slider-container"><input type="range" min="0" max="100" value="${defaultVal}" id="speed-slider"><span id="speed-val">${defaultVal}%</span></div><button id="set-speed" class="my-button">${currentStep === 5 ? 'Next' : 'Finish'}</button>`;
+                const slider = D.getElementById('speed-slider');
+                slider.oninput = () => D.getElementById('speed-val').textContent = `${slider.value}%`;
+                D.getElementById('set-speed').onclick = async () => {
+                    if (currentStep === 5) {
+                        D.minSpeed = slider.value;
+                        step = 6;
+                        displayStep();
+                    } else {
+                        D.maxSpeed = slider.value;
+                        await apiCall('/set_speed_limits', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({min_speed:D.minSpeed, max_speed:D.maxSpeed})});
+                        setupOverlay.style.display = 'none';
+                        statusText.textContent = 'Setup complete. Ready to chat.';
+                    }
+                };
+            }
+
             function displayStep() {
                 if (step === 1) {
-                    setupBox.innerHTML = `<h2>Step 1: Handy Key</h2><p>Please enter your connection key from handyfeeling.com</p><input type="password" id="setup-key" class="input-text" placeholder="Handy Key"><br><button id="setup-next" class="my-button">Next</button>`;
-                    D.getElementById('setup-next').onclick = async () => {
-                        const key = D.getElementById('setup-key').value.trim();
-                        if (!key) return;
-                        myHandyKey = key;
-                        await apiCall('/set_handy_key', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: myHandyKey }) });
-                        step = 2; displayStep();
-                    };
+                    showDeviceStep();
                 } else if (step === 2) {
-                    setupBox.innerHTML = `<h2>Step 2: Persona</h2><p>Describe your AI partner for this session.</p><input type="text" id="setup-persona" class="input-text" value="${data.persona || 'An energetic and passionate girlfriend'}" placeholder="Describe persona"><br><button id="setup-next" class="my-button">Next</button>`;
-                    D.getElementById('setup-next').onclick = () => {
-                        personaInput.value = D.getElementById('setup-persona').value.trim();
-                        if (isReturningUser) { setupOverlay.style.display = 'none'; sendUserMessage(''); }
-                        else { step = 3; displayStep(); }
-                    };
+                    showPersonaStep();
+                } else if (setupDeviceType !== 'handy') {
+                    setupOverlay.style.display = 'none';
+                    statusText.textContent = 'Setup complete. Ready to chat.';
                 } else if (step === 3 || step === 4) {
-                    const title = step === 3 ? "Set the Tip" : "Set the Base";
-                    const btnText = step === 3 ? "Set Tip" : "Next";
-                    setupBox.innerHTML = `<h2>Step ${step}: ${title}</h2><p>Move the Handy to the desired position and click '${btnText}'.</p><div><button id="d-down" class="my-button" style="width:auto;">&lt;&lt; Out</button><span id="d-val" style="padding:0 15px;">?</span>%<button id="d-up" class="my-button" style="width:auto;">In &gt;&gt;</button></div><button id="set-pos" class="my-button">${btnText}</button>`;
-                    let currentDepth = 50;
-                    const updateDepthDisplay = (val) => D.getElementById('d-val').textContent = val;
-                    const nudge = async (dir) => { const res = await apiCall('/nudge', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({direction:dir, key:myHandyKey})}); if (res) { currentDepth = res.depth_percent; updateDepthDisplay(currentDepth); } };
-                    D.getElementById('d-up').onclick = () => nudge('up');
-                    D.getElementById('d-down').onclick = () => nudge('down');
-                    D.getElementById('set-pos').onclick = async () => {
-                        if (step === 3) { D.minDepth = currentDepth; step = 4; displayStep(); }
-                        else { D.maxDepth = currentDepth; await apiCall('/set_depth_limits', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({min_depth:D.minDepth, max_depth:D.maxDepth})}); step = 5; displayStep(); }
-                    };
+                    showDepthStep(step);
                 } else if (step === 5 || step === 6) {
-                    const title = step === 5 ? "Minimum Speed" : "Maximum Speed";
-                    const defaultVal = step === 5 ? 10 : 80;
-                    setupBox.innerHTML = `<h2>Step ${step}: Set ${title}</h2><p>Choose your preferred ${title.toLowerCase()}.</p><div class="slider-container"><input type="range" min="0" max="100" value="${defaultVal}" id="speed-slider"><span id="speed-val">${defaultVal}%</span></div><button id="set-speed" class="my-button">Next</button>`;
-                    const slider = D.getElementById('speed-slider');
-                    slider.oninput = () => D.getElementById('speed-val').textContent = `${slider.value}%`;
-                    D.getElementById('set-speed').onclick = async () => {
-                        if (step === 5) { D.minSpeed = slider.value; step = 6; displayStep(); }
-                        else { D.maxSpeed = slider.value; await apiCall('/set_speed_limits', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({min_speed:D.minSpeed, max_speed:D.maxSpeed})}); setupOverlay.style.display = 'none'; statusText.textContent = `Setup complete. Ready to chat.`; }
-                    };
+                    showSpeedStep(step);
                 }
             }
+
             displayStep();
         }
 
@@ -363,7 +545,23 @@
             const data = await apiCall('/check_settings');
             if (data && data.configured) {
                 statusText.textContent = 'Welcome back! Settings loaded.';
-                myHandyKey = data.handy_key;
+                currentDeviceType = data.device_type || 'handy';
+                updateDeviceUI(currentDeviceType);
+                myHandyKey = data.handy_key || '';
+                handyKeyInput.value = myHandyKey;
+                if (data.lovense) {
+                    myLovenseConfig = {
+                        token: data.lovense.token || '',
+                        domain: data.lovense.domain || '127.0.0.1',
+                        port: data.lovense.port || 20010,
+                        secure: !!data.lovense.secure,
+                    };
+                    lovenseHostInput.value = myLovenseConfig.domain;
+                    lovensePortInput.value = myLovenseConfig.port;
+                    lovenseSecureCheckbox.checked = myLovenseConfig.secure;
+                    lovenseTokenInput.value = myLovenseConfig.token;
+                }
+                deviceTypeSelect.value = currentDeviceType;
                 personaInput.value = data.persona;
                 if(data.ai_name) {
                     aiName = data.ai_name;
@@ -384,6 +582,7 @@
                 D.getElementById('splash-screen').style.display = 'none';
                 renderSetup(true, data);
             } else {
+                updateDeviceUI(currentDeviceType);
                 const startHandler = (e) => { if(e.key === 'Enter'){ D.removeEventListener('keydown', startHandler); D.getElementById('splash-screen').classList.add('hidden'); setTimeout(() => renderSetup(false), 1000); }};
                 D.addEventListener('keydown', startHandler);
             }
@@ -392,6 +591,42 @@
         // Event Listeners
         D.getElementById('send-chat-btn').addEventListener('click', () => sendUserMessage(userChatInput.value));
         userChatInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendUserMessage(userChatInput.value); });
+        deviceTypeSelect.addEventListener('change', (e) => updateDeviceUI(e.target.value));
+        saveDeviceTypeBtn.addEventListener('click', async () => {
+            const selected = deviceTypeSelect.value;
+            const res = await apiCall('/set_device_type', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ device_type: selected }) });
+            if (res && res.status === 'success') {
+                currentDeviceType = res.device_type;
+                updateDeviceUI(currentDeviceType);
+                statusText.textContent = `Device set to ${currentDeviceType === 'handy' ? 'The Handy' : 'Lovense'}.`;
+            }
+        });
+        saveHandyKeyBtn.addEventListener('click', async () => {
+            const key = handyKeyInput.value.trim();
+            if (!key) { statusText.textContent = 'Please enter your Handy key.'; return; }
+            const res = await apiCall('/set_handy_key', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ key }) });
+            if (res && res.status === 'success') {
+                myHandyKey = key;
+                currentDeviceType = 'handy';
+                updateDeviceUI('handy');
+                statusText.textContent = 'Handy key saved!';
+            }
+        });
+        saveLovenseBtn.addEventListener('click', async () => {
+            const host = lovenseHostInput.value.trim() || '127.0.0.1';
+            const port = parseInt(lovensePortInput.value, 10) || 20010;
+            const secure = lovenseSecureCheckbox.checked;
+            const token = lovenseTokenInput.value.trim() || myLovenseConfig.token;
+            if (!token) { statusText.textContent = 'Lovense token is required.'; return; }
+            await apiCall('/set_device_type', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ device_type: 'lovense' }) });
+            const res = await apiCall('/set_lovense_connection', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ token, domain: host, port, secure }) });
+            if (res && res.status === 'success') {
+                myLovenseConfig = { token, domain: host, port, secure };
+                currentDeviceType = 'lovense';
+                updateDeviceUI('lovense');
+                statusText.textContent = 'Lovense connection saved!';
+            }
+        });
         setPersonaBtn.addEventListener('click', () => { sendUserMessage(''); statusText.textContent = 'Persona updated!'; });
         setAiNameBtn.addEventListener('click', async () => {
             const newName = aiNameInput.value.trim();
@@ -492,7 +727,11 @@
             if (data) {
                 const emoji = {'Curious':'🤔','Teasing':'😉','Playful':'😜','Loving':'❤️','Excited':'✨','Passionate':'🔥','Seductive':'😈','Anticipatory':'👀','Breathless':'🥵','Dominant':'👑','Submissive':'🙇‍♀️','Vulnerable':'😳','Confident':'😏','Intimate':'🥰','Needy':'🥺','Overwhelmed':'🤯','Afterglow':'😌'}[data.mood] || '';
                 moodDisplay.textContent = `Mood: ${data.mood} ${emoji}`;
-                drawHandyVisualizer(data.speed || 0, data.depth || 0);
+                if (data.device_type && data.device_type !== currentDeviceType) {
+                    currentDeviceType = data.device_type;
+                    updateDeviceUI(currentDeviceType);
+                }
+                drawDeviceVisualizer(data.speed || 0, data.depth || 0);
             }
         }, 500);
 

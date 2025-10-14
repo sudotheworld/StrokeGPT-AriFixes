@@ -68,7 +68,15 @@ def _load_user_secrets() -> bool:
                 with open(p, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 # Only set known keys if they are unset in the environment
-                for key in ("HANDY_KEY", "ELEVENLABS_API_KEY"):
+                for key in (
+                    "HANDY_KEY",
+                    "ELEVENLABS_API_KEY",
+                    "DEVICE_TYPE",
+                    "LOVENSE_TOKEN",
+                    "LOVENSE_DOMAIN",
+                    "LOVENSE_PORT",
+                    "LOVENSE_SECURE",
+                ):
                     val = data.get(key)
                     if val and not os.environ.get(key):
                         os.environ[key] = str(val)
@@ -101,6 +109,13 @@ class Config:
     # API keys
     HANDY_KEY: str = os.getenv("HANDY_KEY", "")
     ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
+
+    # Device configuration
+    DEVICE_TYPE: str = os.getenv("DEVICE_TYPE", "handy").lower()
+    LOVENSE_TOKEN: str = os.getenv("LOVENSE_TOKEN", "")
+    LOVENSE_DOMAIN: str = os.getenv("LOVENSE_DOMAIN", "127.0.0.1")
+    LOVENSE_PORT: int = int(os.getenv("LOVENSE_PORT", "20010"))
+    LOVENSE_SECURE: bool = os.getenv("LOVENSE_SECURE", "false").lower() in {"1", "true", "yes"}
 
     # Optional room pin for gating the UI (empty string means no pin)
     ROOM_PIN: str = os.getenv("ROOM_PIN", "")

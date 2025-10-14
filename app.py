@@ -12,7 +12,7 @@ from flask import Flask, request, jsonify, render_template_string, send_file, se
 from config import Config
 
 from settings_manager import SettingsManager
-from handy_controller import HandyController
+from device_controller import DeviceController
 from memory_manager import MemoryManager
 from llm_service import LLMService
 from audio_service import AudioService
@@ -24,8 +24,9 @@ app = Flask(__name__)
 settings = SettingsManager(settings_file_path="my_settings.json")
 settings.load()
 
-handy = HandyController(settings.handy_key)
-handy.update_settings(settings.min_speed, settings.max_speed, settings.min_depth, settings.max_depth)
+device = DeviceController(settings)
+device.update_settings(settings.min_speed, settings.max_speed, settings.min_depth, settings.max_depth)
+settings.device_type = device.device_type
 
 llm = LLMService()
 audio = AudioService()
@@ -94,9 +95,10 @@ def get_current_context():
     context = {
         'persona_desc': settings.persona_desc, 'current_mood': current_mood,
         'user_profile': settings.user_profile, 'patterns': settings.patterns,
-        'rules': settings.rules, 'last_stroke_speed': handy.last_relative_speed,
-        'last_depth_pos': handy.last_depth_pos, 'use_long_term_memory': use_long_term_memory,
-        'edging_elapsed_time': None, 'special_persona_mode': special_persona_mode
+        'rules': settings.rules, 'last_stroke_speed': device.last_relative_speed,
+        'last_depth_pos': device.last_depth_pos, 'use_long_term_memory': use_long_term_memory,
+        'edging_elapsed_time': None, 'special_persona_mode': special_persona_mode,
+        'device_type': device.device_type,
     }
     if edging_start_time:
         elapsed_seconds = int(time.time() - edging_start_time)
@@ -131,7 +133,9 @@ def start_background_mode(mode_logic, initial_message, mode_name):
         auto_mode_active_task = None
         edging_start_time = None
 
-    def update_mood(m): global current_mood; current_mood = m
+    def update_mood(m):
+        global current_mood
+        current_mood = m
     def get_timings(n):
         return {
             'auto': (settings.auto_min_time, settings.auto_max_time),
@@ -139,7 +143,7 @@ def start_background_mode(mode_logic, initial_message, mode_name):
             'edging': (settings.edging_min_time, settings.edging_max_time)
         }.get(n, (3, 5))
 
-    services = {'llm': llm, 'handy': handy}
+    services = {'llm': llm, 'device': device}
     callbacks = {
         'send_message': add_message_to_queue, 'get_context': get_current_context,
         'get_timings': get_timings, 'on_stop': on_stop, 'update_mood': update_mood,
@@ -170,7 +174,8 @@ def health():
     return jsonify({
         "server": "ok",
         "ollama_url": Config.OLLAMA_URL,
-        "handy_key_set": bool(handy.handy_key),
+        "device_type": device.device_type,
+        "device_configured": device.is_configured(),
     })
 
 # -------------------------------------------------------------------------
@@ -309,9 +314,9 @@ def api_invite():
 
 def _konami_code_action():
     def pattern_thread():
-        handy.move(speed=100, depth=50, stroke_range=100)
+        device.move(speed=100, depth=50, stroke_range=100)
         time.sleep(5)
-        handy.stop()
+        device.stop()
     threading.Thread(target=pattern_thread).start()
     message = f"Kept you waiting, huh?<pre>{SNAKE_ASCII}</pre>"
     add_message_to_queue(message)
@@ -319,7 +324,7 @@ def _konami_code_action():
 def _handle_chat_commands(text):
     if any(cmd in text for cmd in STOP_COMMANDS):
         if auto_mode_active_task: auto_mode_active_task.stop()
-        handy.stop()
+        device.stop()
         add_message_to_queue("Stopping.", add_to_history=False)
         return True, jsonify({"status": "stopped"})
     if "up up down down left right left right b a" in text:
@@ -339,19 +344,76 @@ def _handle_chat_commands(text):
         return True, jsonify({"status": "milking_started"})
     return False, None
 
+
+def _coerce_bool(val):
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return None
+    if isinstance(val, str):
+        return val.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(val)
+
 @app.route('/send_message', methods=['POST'])
 def handle_user_message():
     global special_persona_mode, special_persona_interactions_left
-    data = request.json
+    data = request.json or {}
     user_input = data.get('message', '').strip()
 
     if (p := data.get('persona_desc')) and p != settings.persona_desc:
         settings.persona_desc = p; settings.save()
-    if (k := data.get('key')) and k != settings.handy_key:
-        handy.set_api_key(k); settings.handy_key = k; settings.save()
-    
-    if not handy.handy_key: return jsonify({"status": "no_key_set"})
-    if not user_input: return jsonify({"status": "empty_message"})
+    save_needed = False
+
+    if (device_type := data.get('device_type')):
+        previous_type = device.device_type
+        device.set_device_type(device_type)
+        if device.device_type != previous_type or settings.device_type != device.device_type:
+            settings.device_type = device.device_type
+            save_needed = True
+
+    if device.device_type == 'handy':
+        key = data.get('handy_key') or data.get('key')
+        if key and key != settings.handy_key:
+            device.set_api_key(key)
+            settings.handy_key = key
+            save_needed = True
+    elif device.device_type == 'lovense':
+        conn = data.get('lovense') or {}
+        updates = {}
+        if (token := conn.get('token')) is not None and token != settings.lovense_token:
+            updates['token'] = token
+            settings.lovense_token = token
+            save_needed = True
+        host = conn.get('domain') or conn.get('host')
+        if host is not None and host != settings.lovense_domain:
+            updates['domain'] = host
+            settings.lovense_domain = host
+            save_needed = True
+        if (port_val := conn.get('port')) is not None:
+            try:
+                port_int = int(port_val)
+            except (TypeError, ValueError):
+                port_int = settings.lovense_port
+            if port_int != settings.lovense_port:
+                updates['port'] = port_int
+                settings.lovense_port = port_int
+                save_needed = True
+        if conn.get('secure') is not None:
+            secure_bool = _coerce_bool(conn.get('secure'))
+            if secure_bool is not None and secure_bool != settings.lovense_secure:
+                updates['secure'] = secure_bool
+                settings.lovense_secure = secure_bool
+                save_needed = True
+        if updates:
+            device.set_lovense_connection(**updates)
+
+    if save_needed:
+        settings.save()
+
+    if not device.is_configured():
+        return jsonify({"status": "device_not_configured"})
+    if not user_input:
+        return jsonify({"status": "empty_message"})
 
     chat_history.append({"role": "user", "content": user_input})
     
@@ -381,21 +443,44 @@ def handle_user_message():
             add_message_to_queue("(Personality core reverted to standard operation.)", add_to_history=False)
 
     if chat_text := llm_response.get("chat"): add_message_to_queue(chat_text)
-    if new_mood := llm_response.get("new_mood"): global current_mood; current_mood = new_mood
+    if new_mood := llm_response.get("new_mood"):
+        global current_mood
+        current_mood = new_mood
     if not auto_mode_active_task and (move := llm_response.get("move")):
-        handy.move(move.get("sp"), move.get("dp"), move.get("rng"))
+        device.move(move.get("sp"), move.get("dp"), move.get("rng"))
     return jsonify({"status": "ok"})
 
 @app.route('/check_settings')
 def check_settings_route():
-    if settings.handy_key and settings.min_depth < settings.max_depth:
+    configured = device.is_configured()
+    if device.device_type == 'handy' and settings.min_depth >= settings.max_depth:
+        configured = False
+
+    if configured:
         return jsonify({
-            "configured": True, "persona": settings.persona_desc, "handy_key": settings.handy_key,
-            "ai_name": settings.ai_name, "elevenlabs_key": settings.elevenlabs_api_key,
+            "configured": True,
+            "persona": settings.persona_desc,
+            "device_type": device.device_type,
+            "handy_key": settings.handy_key,
+            "ai_name": settings.ai_name,
+            "elevenlabs_key": settings.elevenlabs_api_key,
+            "lovense": {
+                "token": settings.lovense_token,
+                "domain": settings.lovense_domain,
+                "port": settings.lovense_port,
+                "secure": settings.lovense_secure,
+            },
             "pfp": settings.profile_picture_b64,
-            "timings": { "auto_min": settings.auto_min_time, "auto_max": settings.auto_max_time, "milking_min": settings.milking_min_time, "milking_max": settings.milking_max_time, "edging_min": settings.edging_min_time, "edging_max": settings.edging_max_time }
+            "timings": {
+                "auto_min": settings.auto_min_time,
+                "auto_max": settings.auto_max_time,
+                "milking_min": settings.milking_min_time,
+                "milking_max": settings.milking_max_time,
+                "edging_min": settings.edging_min_time,
+                "edging_max": settings.edging_max_time,
+            },
         })
-    return jsonify({"configured": False})
+    return jsonify({"configured": False, "device_type": device.device_type})
 
 @app.route('/set_ai_name', methods=['POST'])
 def set_ai_name_route():
@@ -431,17 +516,75 @@ def set_pfp_route():
 def set_handy_key_route():
     key = request.json.get('key')
     if not key: return jsonify({"status": "error", "message": "Key is missing"}), 400
-    handy.set_api_key(key); settings.handy_key = key; settings.save()
+    device.set_api_key(key)
+    device.set_device_type('handy')
+    settings.handy_key = key
+    settings.device_type = 'handy'
+    settings.save()
+    return jsonify({"status": "success"})
+
+
+@app.route('/set_device_type', methods=['POST'])
+def set_device_type_route():
+    dtype = request.json.get('device_type', 'handy')
+    device.set_device_type(dtype)
+    settings.device_type = device.device_type
+    settings.save()
+    return jsonify({"status": "success", "device_type": device.device_type})
+
+
+@app.route('/set_lovense_connection', methods=['POST'])
+def set_lovense_connection_route():
+    payload = request.json or {}
+    token = payload.get('token')
+    domain = payload.get('domain') or payload.get('host')
+    port_val = payload.get('port')
+    secure_val = payload.get('secure')
+
+    updates = {}
+
+    if token is not None:
+        updates['token'] = token
+    if domain is not None:
+        updates['domain'] = domain
+    if port_val is not None:
+        try:
+            port_int = int(port_val)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Invalid port"}), 400
+        updates['port'] = port_int
+    if secure_val is not None:
+        converted_secure = _coerce_bool(secure_val)
+        if converted_secure is not None:
+            updates['secure'] = converted_secure
+
+    if not updates:
+        return jsonify({"status": "error", "message": "No connection values provided."}), 400
+
+    device.set_lovense_connection(**updates)
+
+    if token is not None:
+        settings.lovense_token = token
+    if domain is not None:
+        settings.lovense_domain = domain
+    if port_val is not None:
+        settings.lovense_port = updates['port']
+    if secure_val is not None and 'secure' in updates:
+        settings.lovense_secure = updates['secure']
+
+    settings.save()
     return jsonify({"status": "success"})
 
 @app.route('/nudge', methods=['POST'])
 def nudge_route():
     global calibration_pos_mm
-    if calibration_pos_mm == 0.0 and (pos := handy.get_position_mm()):
+    if not device.supports_calibration():
+        return jsonify({"status": "error", "message": "Calibration not supported for this device."}), 400
+    if calibration_pos_mm == 0.0 and (pos := device.get_position_mm()):
         calibration_pos_mm = pos
     direction = request.json.get('direction')
-    calibration_pos_mm = handy.nudge(direction, 0, 100, calibration_pos_mm)
-    return jsonify({"status": "ok", "depth_percent": handy.mm_to_percent(calibration_pos_mm)})
+    calibration_pos_mm = device.nudge(direction, 0, 100, calibration_pos_mm)
+    return jsonify({"status": "ok", "depth_percent": device.mm_to_percent(calibration_pos_mm)})
 
 @app.route('/setup_elevenlabs', methods=['POST'])
 def elevenlabs_setup_route():
@@ -466,26 +609,31 @@ def get_ui_updates_route():
 
 @app.route('/get_status')
 def get_status_route():
-    return jsonify({"mood": current_mood, "speed": handy.last_stroke_speed, "depth": handy.last_depth_pos})
+    return jsonify({
+        "mood": current_mood,
+        "speed": device.last_stroke_speed,
+        "depth": device.last_depth_pos,
+        "device_type": device.device_type,
+    })
 
 @app.route('/set_depth_limits', methods=['POST'])
 def set_depth_limits_route():
     depth1 = int(request.json.get('min_depth', 5)); depth2 = int(request.json.get('max_depth', 100))
     settings.min_depth = min(depth1, depth2); settings.max_depth = max(depth1, depth2)
-    handy.update_settings(settings.min_speed, settings.max_speed, settings.min_depth, settings.max_depth)
+    device.update_settings(settings.min_speed, settings.max_speed, settings.min_depth, settings.max_depth)
     settings.save()
     return jsonify({"status": "success"})
 
 @app.route('/set_speed_limits', methods=['POST'])
 def set_speed_limits_route():
     settings.min_speed = int(request.json.get('min_speed', 10)); settings.max_speed = int(request.json.get('max_speed', 80))
-    handy.update_settings(settings.min_speed, settings.max_speed, settings.min_depth, settings.max_depth)
+    device.update_settings(settings.min_speed, settings.max_speed, settings.min_depth, settings.max_depth)
     settings.save()
     return jsonify({"status": "success"})
 
 @app.route('/like_last_move', methods=['POST'])
 def like_last_move_route():
-    last_speed = handy.last_relative_speed; last_depth = handy.last_depth_pos
+    last_speed = device.last_relative_speed; last_depth = device.last_depth_pos
     pattern_name = llm.name_this_move(last_speed, last_depth, current_mood)
     sp_range = [max(0, last_speed - 5), min(100, last_speed + 5)]; dp_range = [max(0, last_depth - 5), min(100, last_depth + 5)]
     new_pattern = {"name": pattern_name, "sp_range": [int(p) for p in sp_range], "dp_range": [int(p) for p in dp_range], "moods": [current_mood], "score": 1}

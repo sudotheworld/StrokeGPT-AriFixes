@@ -175,10 +175,20 @@
             <button id="save-timings-btn" class="my-button">Save Timings</button>
         </div>
         <div class="setting-section">
-            <h3>Voice Output (ElevenLabs)</h3>
-            <input type="password" id="elevenlabs-key-input" class="input-text" placeholder="ElevenLabs API Key">
-            <button id="set-elevenlabs-key-button" class="my-button">Set Key</button>
-            <select id="elevenlabs-voice-select-box" class="select-box" disabled><option>Set API Key to load voices...</option></select>
+            <h3>Voice Output</h3>
+            <label for="tts-mode-select">Mode</label>
+            <select id="tts-mode-select" class="select-box">
+                <option value="elevenlabs_cloud">ElevenLabs (cloud)</option>
+                <option value="local_tts">Local TTS</option>
+            </select>
+            <div id="elevenlabs-controls">
+                <input type="password" id="elevenlabs-key-input" class="input-text" placeholder="ElevenLabs API Key">
+                <button id="set-elevenlabs-key-button" class="my-button">Set Key</button>
+                <select id="elevenlabs-voice-select-box" class="select-box" disabled><option>Set API Key to load voices...</option></select>
+            </div>
+            <div id="local-tts-hint" style="display:none; font-size: 0.85em; line-height: 1.4; margin-top: 8px; opacity: 0.8;">
+                Install the Coqui <code>TTS</code> package locally to enable offline speech.
+            </div>
             <div class="audio-toggle-line"><input type="checkbox" id="enable-audio-checkbox"><label for="enable-audio-checkbox">Enable Audio</label></div>
         </div>
         <div class="setting-section">
@@ -205,6 +215,12 @@
         const setAiNameBtn = D.getElementById('set-ai-name-btn');
         const elevenLabsKeyInput = D.getElementById('elevenlabs-key-input');
         const setElevenLabsKeyButton = D.getElementById('set-elevenlabs-key-button');
+        const elevenLabsVoiceSelect = D.getElementById('elevenlabs-voice-select-box');
+        const enableAudioCheckbox = D.getElementById('enable-audio-checkbox');
+        const ttsModeSelect = D.getElementById('tts-mode-select');
+        const localTtsHint = D.getElementById('local-tts-hint');
+        const elevenLabsControls = D.getElementById('elevenlabs-controls');
+        elevenLabsVoiceSelect.dataset.hasVoices = 'false';
         const setupOverlay = D.getElementById('setup-overlay');
         const setupBox = D.getElementById('setup-box');
         const statusText = D.getElementById('status-text');
@@ -223,17 +239,28 @@
         const easterEggOverlay = D.getElementById('easter-egg-overlay');
         const ctx = rhythmCanvas.getContext('2d');
         let myHandyKey = '', myPersonaDescription = '', aiName = 'BOT', edgingTimerInterval = null;
+        let currentTtsMode = 'elevenlabs_cloud';
+        let previousVoiceId = '';
         
         async function apiCall(endpoint, options = {}) {
             try {
                 const response = await fetch(endpoint, options);
-                if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); }
-                const contentType = response.headers.get("content-type");
-                if (contentType && contentType.includes("audio/mpeg")) { return response.blob(); }
-                return response.json();
+                const contentType = response.headers.get("content-type") || "";
+                if (contentType.startsWith("audio/")) {
+                    return await response.blob();
+                }
+                if (contentType.includes("application/json")) {
+                    const data = await response.json();
+                    if (!response.ok) {
+                        data._httpError = true;
+                    }
+                    return data;
+                }
+                return null;
             } catch (error) {
                 console.error(`API call to ${endpoint} failed:`, error);
                 statusText.textContent = `Error: Cannot connect to server.`;
+                return null;
             }
         }
         
@@ -251,6 +278,36 @@
                 </div>`;
             chatMessagesContainer.insertBefore(el, typingIndicator);
             chatView.scrollTop = chatView.scrollHeight;
+        }
+
+        function updateTtsModeUI(mode) {
+            currentTtsMode = mode;
+            const isElevenLabs = mode === 'elevenlabs_cloud';
+            elevenLabsControls.style.display = isElevenLabs ? 'block' : 'none';
+            elevenLabsKeyInput.disabled = !isElevenLabs;
+            setElevenLabsKeyButton.disabled = !isElevenLabs;
+            if (isElevenLabs) {
+                const hasVoices = elevenLabsVoiceSelect.dataset.hasVoices === 'true';
+                elevenLabsVoiceSelect.disabled = !hasVoices;
+            } else {
+                elevenLabsVoiceSelect.disabled = true;
+            }
+            localTtsHint.style.display = isElevenLabs ? 'none' : 'block';
+        }
+
+        async function configureAudio(voiceId, enabled) {
+            const data = await apiCall('/set_audio_settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ voice_id: voiceId, enabled })
+            });
+            if (!data) { return { ok: false }; }
+            if (data._httpError || data.status !== 'success') {
+                statusText.textContent = `Audio error: ${data.message || 'Unable to update audio settings.'}`;
+                return { ok: false, data };
+            }
+            statusText.textContent = data.message || (enabled ? 'Audio enabled.' : 'Audio disabled.');
+            return { ok: true, data };
         }
 
         async function sendUserMessage(message) {
@@ -374,7 +431,11 @@
                     pfpPreview.src = data.pfp;
                     typingIndicatorPfp.src = data.pfp;
                 }
-                if(data.elevenlabs_key) {
+                const modeFromServer = data.tts_mode || 'elevenlabs_cloud';
+                ttsModeSelect.value = modeFromServer;
+                updateTtsModeUI(modeFromServer);
+                if (data.elevenlabs_voice_id) { previousVoiceId = data.elevenlabs_voice_id; }
+                if (modeFromServer === 'elevenlabs_cloud' && data.elevenlabs_key) {
                     elevenLabsKeyInput.value = data.elevenlabs_key;
                     setElevenLabsKeyButton.click();
                 }
@@ -435,21 +496,56 @@
             reader.readAsDataURL(file);
         });
         setElevenLabsKeyButton.addEventListener('click', async () => {
+            if (currentTtsMode !== 'elevenlabs_cloud') {
+                statusText.textContent = 'Switch to ElevenLabs mode to configure the API key.';
+                return;
+            }
             const apiKey = elevenLabsKeyInput.value.trim();
             if(!apiKey) return;
             const data = await apiCall('/setup_elevenlabs', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({api_key:apiKey})});
-            if (data && data.status === 'success') {
-                const selectBox = D.getElementById('elevenlabs-voice-select-box');
-                selectBox.innerHTML = '<option value="">-- Pick a Voice --</option>';
-                for (const [name, id] of Object.entries(data.voices)) { selectBox.innerHTML += `<option value="${id}">${name}</option>`; }
-                selectBox.disabled = false;
+            if (!data) return;
+            if (data._httpError || data.status !== 'success') {
+                statusText.textContent = `Audio error: ${data.message || 'Unable to verify ElevenLabs key.'}`;
+                return;
             }
+            elevenLabsVoiceSelect.innerHTML = '<option value="">-- Pick a Voice --</option>';
+            const voices = data.voices || {};
+            for (const [name, id] of Object.entries(voices)) {
+                const selectedAttr = id === previousVoiceId ? 'selected' : '';
+                elevenLabsVoiceSelect.innerHTML += `<option value="${id}" ${selectedAttr}>${name}</option>`;
+            }
+            const hasVoices = Object.keys(voices).length > 0;
+            elevenLabsVoiceSelect.dataset.hasVoices = hasVoices ? 'true' : 'false';
+            if (hasVoices && !previousVoiceId) {
+                previousVoiceId = elevenLabsVoiceSelect.value;
+            }
+            updateTtsModeUI(currentTtsMode);
+            statusText.textContent = 'ElevenLabs voices loaded.';
         });
         D.getElementById('like-this-move-btn').addEventListener('click', async () => {
             const data = await apiCall('/like_last_move', { method: 'POST' });
             if (data && data.status === 'boosted') {
                 statusText.textContent = `Saved '${data.name}' to my memory!`;
             } else { statusText.textContent = "Status: No active move to like."; }
+        });
+        ttsModeSelect.addEventListener('change', async (e) => {
+            const desiredMode = e.target.value;
+            const previousMode = currentTtsMode;
+            const data = await apiCall('/set_tts_mode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: desiredMode })
+            });
+            if (!data || data._httpError || data.status !== 'success') {
+                statusText.textContent = `Audio error: ${data?.message || 'Unable to switch modes.'}`;
+                ttsModeSelect.value = previousMode;
+                updateTtsModeUI(previousMode);
+                return;
+            }
+            const confirmedMode = data.mode || desiredMode;
+            updateTtsModeUI(confirmedMode);
+            ttsModeSelect.value = confirmedMode;
+            statusText.textContent = data.message || (confirmedMode === 'local_tts' ? 'Local TTS mode enabled.' : 'ElevenLabs mode enabled.');
         });
         const stopButtons = [D.getElementById('stop-auto-btn'), D.getElementById('emergency-stop-all-btn')];
         stopButtons.forEach(btn => btn.addEventListener('click', () => {
@@ -468,10 +564,26 @@
             imCloseBtn.style.transform = 'scale(0.95)';
             setTimeout(() => { imCloseBtn.style.transform = ''; }, 100);
         });
-        D.getElementById('elevenlabs-voice-select-box').addEventListener('change', (e) => apiCall('/set_elevenlabs_voice', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({voice_id: e.target.value, enabled:D.getElementById('enable-audio-checkbox').checked})}));
-        D.getElementById('enable-audio-checkbox').addEventListener('change', (e) => apiCall('/set_elevenlabs_voice', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({voice_id: D.getElementById('elevenlabs-voice-select-box').value, enabled: e.target.checked})}));
+        elevenLabsVoiceSelect.addEventListener('change', async (e) => {
+            const voiceId = e.target.value;
+            const result = await configureAudio(voiceId, enableAudioCheckbox.checked);
+            if (result?.ok) {
+                previousVoiceId = voiceId;
+            } else {
+                e.target.value = previousVoiceId;
+            }
+        });
+        enableAudioCheckbox.addEventListener('change', async (e) => {
+            const desired = e.target.checked;
+            const result = await configureAudio(elevenLabsVoiceSelect.value, desired);
+            if (!result?.ok) {
+                e.target.checked = !desired;
+            }
+        });
         D.getElementById('start-auto-btn').addEventListener('click', () => sendUserMessage('take over'));
         D.getElementById('milking-mode-btn').addEventListener('click', () => apiCall('/start_milking_mode', {method:'POST'}));
+
+        updateTtsModeUI(currentTtsMode);
 
         // Polling Loops
         setInterval(async () => {

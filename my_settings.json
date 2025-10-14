@@ -5,6 +5,7 @@
   "profile_picture_b64": "",
   "elevenlabs_api_key": "",
   "elevenlabs_voice_id": "",
+  "tts_mode": "elevenlabs_cloud",
   "patterns": [],
   "milking_patterns": [],
   "rules": [],

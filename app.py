@@ -30,7 +30,12 @@ handy.update_settings(settings.min_speed, settings.max_speed, settings.min_depth
 
 llm = LLMService()
 audio = AudioService()
-if settings.elevenlabs_api_key:
+initial_mode = settings.tts_mode or Config.TTS_MODE
+mode_ok, mode_message = audio.set_mode(initial_mode)
+if not mode_ok:
+    print(f"⚠️ {mode_message}")
+
+if audio.tts_mode == "elevenlabs_cloud" and settings.elevenlabs_api_key:
     if audio.set_api_key(settings.elevenlabs_api_key):
         audio.fetch_available_voices()
         audio.configure_voice(settings.elevenlabs_voice_id, True)
@@ -426,6 +431,8 @@ def check_settings_route():
         return jsonify({
             "configured": True, "persona": settings.persona_desc, "handy_key": settings.handy_key,
             "ai_name": settings.ai_name, "elevenlabs_key": settings.elevenlabs_api_key,
+            "elevenlabs_voice_id": settings.elevenlabs_voice_id,
+            "tts_mode": settings.tts_mode or audio.tts_mode,
             "pfp": settings.profile_picture_b64,
             "timings": { "auto_min": settings.auto_min_time, "auto_max": settings.auto_max_time, "milking_min": settings.milking_min_time, "milking_max": settings.milking_max_time, "edging_min": settings.edging_min_time, "edging_max": settings.edging_max_time }
         })
@@ -480,22 +487,59 @@ def nudge_route():
 @app.route('/setup_elevenlabs', methods=['POST'])
 def elevenlabs_setup_route():
     api_key = request.json.get('api_key')
-    if not api_key or not audio.set_api_key(api_key): return jsonify({"status": "error"}), 400
-    settings.elevenlabs_api_key = api_key; settings.save()
+    if not api_key or not audio.set_api_key(api_key):
+        return jsonify({"status": "error", "message": audio.get_last_error() or "Invalid API key."}), 400
+    settings.elevenlabs_api_key = api_key
+    settings.save()
     return jsonify(audio.fetch_available_voices())
+
+
+@app.route('/set_tts_mode', methods=['POST'])
+def set_tts_mode_route():
+    mode = (request.json or {}).get('mode')
+    if not mode:
+        return jsonify({"status": "error", "message": "Missing TTS mode."}), 400
+    ok, message = audio.set_mode(mode)
+    if ok:
+        settings.tts_mode = mode
+        settings.save()
+        return jsonify({"status": "success", "message": message, "mode": audio.tts_mode})
+    return jsonify({"status": "error", "message": message, "mode": audio.tts_mode}), 400
+
+
+def _apply_audio_settings(voice_id, enabled):
+    ok, message = audio.configure_voice(voice_id, enabled)
+    if ok and audio.tts_mode == 'elevenlabs_cloud':
+        settings.elevenlabs_voice_id = audio.voice_id
+    if ok:
+        settings.save()
+    return ok, message
+
+
+@app.route('/set_audio_settings', methods=['POST'])
+def set_audio_settings_route():
+    payload = request.json or {}
+    voice_id = payload.get('voice_id')
+    enabled = payload.get('enabled', False)
+    ok, message = _apply_audio_settings(voice_id, enabled)
+    status = "success" if ok else "error"
+    return jsonify({"status": status, "message": message}), (200 if ok else 400)
+
 
 @app.route('/set_elevenlabs_voice', methods=['POST'])
 def set_elevenlabs_voice_route():
+    """Backward compatible endpoint that proxies to set_audio_settings."""
     voice_id, enabled = request.json.get('voice_id'), request.json.get('enabled', False)
-    ok, message = audio.configure_voice(voice_id, enabled)
-    if ok: settings.elevenlabs_voice_id = voice_id; settings.save()
-    return jsonify({"status": "ok" if ok else "error", "message": message})
+    ok, message = _apply_audio_settings(voice_id, enabled)
+    status = "ok" if ok else "error"
+    return jsonify({"status": status, "message": message}), (200 if ok else 400)
 
 @app.route('/get_updates')
 def get_ui_updates_route():
     messages = [messages_for_ui.popleft() for _ in range(len(messages_for_ui))]
     if audio_chunk := audio.get_next_audio_chunk():
-        return send_file(io.BytesIO(audio_chunk), mimetype='audio/mpeg')
+        audio_bytes, mimetype = audio_chunk
+        return send_file(io.BytesIO(audio_bytes), mimetype=mimetype)
     return jsonify({"messages": messages})
 
 @app.route('/get_status')

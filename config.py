@@ -68,7 +68,7 @@ def _load_user_secrets() -> bool:
                 with open(p, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 # Only set known keys if they are unset in the environment
-                for key in ("HANDY_KEY", "ELEVENLABS_API_KEY"):
+                for key in ("HANDY_KEY", "ELEVENLABS_API_KEY", "TTS_MODE"):
                     val = data.get(key)
                     if val and not os.environ.get(key):
                         os.environ[key] = str(val)
@@ -101,6 +101,7 @@ class Config:
     # API keys
     HANDY_KEY: str = os.getenv("HANDY_KEY", "")
     ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
+    TTS_MODE: str = os.getenv("TTS_MODE", "elevenlabs_cloud")
 
     # Optional room pin for gating the UI (empty string means no pin)
     ROOM_PIN: str = os.getenv("ROOM_PIN", "")

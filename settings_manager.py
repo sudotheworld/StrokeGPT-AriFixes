@@ -20,6 +20,7 @@ class SettingsManager:
         self.funscript_catalog = {}
         self.elevenlabs_api_key = ""
         self.elevenlabs_voice_id = ""
+        self.tts_mode = "elevenlabs_cloud"
         self.min_depth = 5
         self.max_depth = 100
         self.min_speed = 10
@@ -56,6 +57,7 @@ class SettingsManager:
             self.funscript_catalog = catalog
             self.elevenlabs_api_key = data.get("elevenlabs_api_key", "")
             self.elevenlabs_voice_id = data.get("elevenlabs_voice_id", "")
+            self.tts_mode = data.get("tts_mode", "elevenlabs_cloud")
             self.min_depth = data.get("min_depth", 5)
             self.max_depth = data.get("max_depth", 100)
             self.min_speed = data.get("min_speed", 10)
@@ -90,6 +92,7 @@ class SettingsManager:
                 "persona_desc": self.persona_desc,
                 "profile_picture_b64": self.profile_picture_b64,
                 "elevenlabs_api_key": self.elevenlabs_api_key, "elevenlabs_voice_id": self.elevenlabs_voice_id,
+                "tts_mode": self.tts_mode,
                 "patterns": self.patterns, "milking_patterns": self.milking_patterns,
                 "rules": self.rules, "user_profile": self.user_profile,
                 "funscript_catalog": self.funscript_catalog,

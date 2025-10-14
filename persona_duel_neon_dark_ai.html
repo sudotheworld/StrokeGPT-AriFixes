@@ -168,6 +168,11 @@
   .composer input[type="text"]{
     flex:1; padding:12px 14px; border-radius: 999px; border:1px solid rgba(255,255,255,.1); background: rgba(0,0,0,.3);
   }
+  .composer button:disabled,
+  .composer input:disabled{
+    opacity:0.6;
+    cursor:not-allowed;
+  }
   .iconbtn{
     border:1px solid var(--edge); background: rgba(10,10,10,.5); border-radius: 999px; width:44px; height:44px; display:grid; place-items:center; cursor:pointer;
   }
@@ -270,6 +275,11 @@
   .primary:hover{ box-shadow: 0 0 10px var(--brand1); }
   .ghost{ background: transparent; border: 1px solid var(--brand1); color: var(--brand1); }
   .ghost:hover{ background: var(--brand1); color: white; box-shadow: 0 0 10px var(--brand1); }
+
+  .input-error{
+    border-color: var(--bad) !important;
+    box-shadow: 0 0 8px rgba(255, 77, 126, 0.45);
+  }
 
   /* Footer */
   .footer{ grid-area: footer; display:flex; align-items:center; justify-content: space-between; padding: 12px 16px; }
@@ -542,6 +552,201 @@
     setTimeout(()=>{ t.remove(); }, 1400);
   }
 
+  const chatEl = document.getElementById('chat');
+  const personaDescInput = document.getElementById('personaDesc');
+  const handyKeyInput = document.getElementById('handyKey');
+  const elevenKeyInput = document.getElementById('elevenKey');
+  const composerInput = document.getElementById('composerInput');
+  const sendButton = document.querySelector('.send');
+  const composerControls = Array.from(document.querySelectorAll('.composer button, .composer input'));
+  const footerStatus = document.querySelector('.footer .status');
+  const micBtn = document.getElementById('micBtn');
+  let micOn = false;
+  let chatInitialized = false;
+  let statusOverrideExpires = 0;
+  const sendButtonDefaultText = sendButton ? sendButton.textContent : 'Send';
+
+  function escapeHtml(str){
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function addChatMessage(role, text){
+    if(!chatEl) return;
+    if(!chatInitialized){
+      chatEl.innerHTML = '';
+      chatInitialized = true;
+    }
+    const msg = document.createElement('div');
+    const label = role === 'user' ? 'You' : 'AI';
+    msg.className = 'msg' + (role === 'user' ? ' you' : '');
+    const content = role === 'user' ? escapeHtml(text) : text;
+    const timestamp = new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    msg.innerHTML = `<b>${label}</b><br/>${content}<div class="tiny">${timestamp}</div>`;
+    chatEl.appendChild(msg);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  function setMicState(on, {announce = false} = {}){
+    micOn = !!on;
+    if(!micBtn) return;
+    micBtn.style.outline = micOn ? '4px solid rgba(255, 0, 150, 0.4)' : 'none';
+    micBtn.style.borderColor = micOn ? '#ff00a0' : 'var(--edge)';
+    micBtn.setAttribute('aria-pressed', micOn.toString());
+    if(announce){
+      toast('Mic ' + (micOn ? 'listening (UI only)' : 'off'));
+    }
+  }
+
+  function setComposerDisabled(disabled){
+    composerControls.forEach(el => { el.disabled = disabled; });
+    if(sendButton){
+      sendButton.textContent = disabled ? 'Sending…' : sendButtonDefaultText;
+    }
+  }
+
+  function showStatusMessage(text, duration = 0){
+    if(!footerStatus) return;
+    footerStatus.textContent = text;
+    statusOverrideExpires = duration > 0 ? Date.now() + duration : 0;
+  }
+
+  async function apiCall(endpoint, fetchOptions = {}, {silent = false} = {}){
+    try {
+      const response = await fetch(endpoint, fetchOptions);
+      if(!response.ok){
+        throw new Error(`HTTP ${response.status}`);
+      }
+      if(response.status === 204) return null;
+      const contentType = response.headers.get('content-type') || '';
+      if(contentType.includes('application/json')){
+        const text = await response.text();
+        return text ? JSON.parse(text) : {};
+      }
+      if(contentType.startsWith('audio/')){
+        return await response.blob();
+      }
+      return await response.text();
+    } catch(err){
+      if(!silent) toast('Network error — unable to reach server.');
+      console.error(`API call to ${endpoint} failed:`, err);
+      return null;
+    }
+  }
+
+  async function sendCurrentMessage(){
+    if(!composerInput) return;
+    const message = composerInput.value.trim();
+    if(!message) return;
+    const payload = {
+      message,
+      persona_desc: personaDescInput ? personaDescInput.value.trim() : '',
+      key: handyKeyInput ? handyKeyInput.value.trim() : ''
+    };
+    setComposerDisabled(true);
+    addChatMessage('user', message);
+    composerInput.value = '';
+    try {
+      const response = await apiCall('/send_message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if(!response){
+        showStatusMessage('Unable to send — check connection.', 5000);
+        return;
+      }
+      if(response.status === 'no_key_set'){
+        handyKeyInput?.classList.add('input-error');
+        showStatusMessage('Handy key missing — enter it on the left.', 6000);
+        toast('Handy key missing. Add it in the sidebar.');
+        return;
+      }
+      if(response.status === 'empty_message'){
+        toast('Message was empty.');
+        return;
+      }
+      handyKeyInput?.classList.remove('input-error');
+    } finally {
+      setComposerDisabled(false);
+      composerInput.focus();
+    }
+  }
+
+  async function hydrateFromSettings(){
+    const data = await apiCall('/check_settings', {}, {silent: true});
+    if(!data) return;
+    if(personaDescInput && typeof data.persona === 'string'){
+      personaDescInput.value = data.persona;
+    }
+    if(handyKeyInput && typeof data.handy_key === 'string'){
+      handyKeyInput.value = data.handy_key;
+      handyKeyInput.classList.remove('input-error');
+    }
+    if(elevenKeyInput && Object.prototype.hasOwnProperty.call(data, 'elevenlabs_key')){
+      elevenKeyInput.value = data.elevenlabs_key || '';
+    }
+    if(typeof data.voice_enabled !== 'undefined'){
+      setMicState(data.voice_enabled);
+    } else if(data.elevenlabs_voice_id){
+      setMicState(true);
+    }
+    if(data.configured){
+      showStatusMessage('Settings loaded — ready to duel!', 5000);
+    }
+  }
+
+  async function pollUpdates(){
+    const result = await apiCall('/get_updates', {}, {silent: true});
+    if(!result) return;
+    if(result instanceof Blob){
+      const url = URL.createObjectURL(result);
+      const audio = new Audio(url);
+      audio.play();
+      const revoke = () => URL.revokeObjectURL(url);
+      audio.addEventListener('ended', revoke, {once: true});
+      audio.addEventListener('error', revoke, {once: true});
+      return;
+    }
+    if(Array.isArray(result.messages)){
+      result.messages.forEach(msg => addChatMessage('assistant', msg));
+    }
+  }
+
+  async function pollStatus(){
+    const now = Date.now();
+    if(statusOverrideExpires && now < statusOverrideExpires) return;
+    if(statusOverrideExpires && now >= statusOverrideExpires) statusOverrideExpires = 0;
+    const result = await apiCall('/get_status', {}, {silent: true});
+    if(!result || typeof result !== 'object') return;
+    const mood = result.mood || 'Unknown';
+    const speed = typeof result.speed === 'number' ? Math.round(result.speed) : 0;
+    const depth = typeof result.depth === 'number' ? Math.round(result.depth) : 0;
+    showStatusMessage(`Mood: ${mood} • Speed ${speed}% • Depth ${depth}%`);
+  }
+
+  function startPolling(){
+    pollUpdates();
+    pollStatus();
+    setInterval(pollUpdates, 1500);
+    setInterval(pollStatus, 2000);
+  }
+
+  micBtn?.addEventListener('click', ()=> setMicState(!micOn, {announce: true}));
+  sendButton?.addEventListener('click', sendCurrentMessage);
+  composerInput?.addEventListener('keydown', e => {
+    if(e.key === 'Enter' && !e.shiftKey){
+      e.preventDefault();
+      sendCurrentMessage();
+    }
+  });
+  handyKeyInput?.addEventListener('input', ()=> handyKeyInput.classList.remove('input-error'));
+
+  setMicState(false);
+  hydrateFromSettings();
+  startPolling();
+
   // Collapser
   const agentsToggle = document.getElementById('agentsToggle');
   const agentsList = document.getElementById('agentsList');
@@ -713,16 +918,6 @@
     handle.addEventListener('mousedown', onDown);
     handle.addEventListener('touchstart', onDown);
   })(pip, pipResize);
-
-  // Mic button (visual only)
-  const micBtn = document.getElementById('micBtn');
-  let micOn = false;
-  micBtn?.addEventListener('click', ()=>{
-    micOn = !micOn;
-    micBtn.style.outline = micOn ? '4px solid rgba(255, 0, 150, 0.4)' : 'none';
-    micBtn.style.borderColor = micOn ? '#ff00a0' : 'var(--edge)';
-    toast('Mic ' + (micOn ? 'listening (UI only)' : 'off'));
-  });
 
   // Save layout (UI only)
   const saveLayout = document.getElementById('saveLayout');

@@ -177,9 +177,32 @@
   .send:hover{ filter: brightness(1.2); box-shadow: 0 0 10px var(--brand1); }
 
   .rating{
-    display:flex; flex-wrap: wrap; gap:8px; padding: 0 14px 12px 14px; align-items:center;
+    display:flex;
+    flex-direction:column;
+    gap:16px;
+    padding: 16px;
+    align-items:stretch;
+    text-align:center;
   }
-  .rating .label{ font-size:12px; font-weight:800; letter-spacing:.3px; color:#ccc; margin-right:8px; }
+  .rating-group{
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    align-items:center;
+  }
+  .rating-group .label{
+    font-size:12px;
+    font-weight:800;
+    letter-spacing:.3px;
+    color:#ccc;
+    text-transform:uppercase;
+  }
+  .rating-group .star-row{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+    justify-content:center;
+  }
   .star{
     --accent: #00ffff;
     position: relative;
@@ -382,17 +405,36 @@
       </div>
 
       <div class="rating panel">
-        <div class="label">Rate response (saves to Memory):</div>
-        <button class="star" data-score="-5" data-sign="neg"><span class="num">−5</span></button>
-        <button class="star" data-score="-4" data-sign="neg"><span class="num">−4</span></button>
-        <button class="star" data-score="-3" data-sign="neg"><span class="num">−3</span></button>
-        <button class="star" data-score="-2" data-sign="neg"><span class="num">−2</span></button>
-        <button class="star" data-score="-1" data-sign="neg"><span class="num">−1</span></button>
-        <button class="star" data-score="1"><span class="num">+1</span></button>
-        <button class="star" data-score="2"><span class="num">+2</span></button>
-        <button class="star" data-score="3"><span class="num">+3</span></button>
-        <button class="star" data-score="4"><span class="num">+4</span></button>
-        <button class="star" data-score="5"><span class="num">+5</span></button>
+        <div class="rating-group" data-rating-label="Reply Rating">
+          <div class="label">Reply Rating</div>
+          <div class="star-row" role="group" aria-label="Reply rating">
+            <button class="star" type="button" data-score="-5" data-sign="neg" aria-pressed="false"><span class="num">−5</span></button>
+            <button class="star" type="button" data-score="-4" data-sign="neg" aria-pressed="false"><span class="num">−4</span></button>
+            <button class="star" type="button" data-score="-3" data-sign="neg" aria-pressed="false"><span class="num">−3</span></button>
+            <button class="star" type="button" data-score="-2" data-sign="neg" aria-pressed="false"><span class="num">−2</span></button>
+            <button class="star" type="button" data-score="-1" data-sign="neg" aria-pressed="false"><span class="num">−1</span></button>
+            <button class="star" type="button" data-score="1" aria-pressed="false"><span class="num">+1</span></button>
+            <button class="star" type="button" data-score="2" aria-pressed="false"><span class="num">+2</span></button>
+            <button class="star" type="button" data-score="3" aria-pressed="false"><span class="num">+3</span></button>
+            <button class="star" type="button" data-score="4" aria-pressed="false"><span class="num">+4</span></button>
+            <button class="star" type="button" data-score="5" aria-pressed="false"><span class="num">+5</span></button>
+          </div>
+        </div>
+        <div class="rating-group" data-rating-label="Handy Action Rating">
+          <div class="label">Handy Action Rating</div>
+          <div class="star-row" role="group" aria-label="Handy action rating">
+            <button class="star" type="button" data-score="-5" data-sign="neg" aria-pressed="false"><span class="num">−5</span></button>
+            <button class="star" type="button" data-score="-4" data-sign="neg" aria-pressed="false"><span class="num">−4</span></button>
+            <button class="star" type="button" data-score="-3" data-sign="neg" aria-pressed="false"><span class="num">−3</span></button>
+            <button class="star" type="button" data-score="-2" data-sign="neg" aria-pressed="false"><span class="num">−2</span></button>
+            <button class="star" type="button" data-score="-1" data-sign="neg" aria-pressed="false"><span class="num">−1</span></button>
+            <button class="star" type="button" data-score="1" aria-pressed="false"><span class="num">+1</span></button>
+            <button class="star" type="button" data-score="2" aria-pressed="false"><span class="num">+2</span></button>
+            <button class="star" type="button" data-score="3" aria-pressed="false"><span class="num">+3</span></button>
+            <button class="star" type="button" data-score="4" aria-pressed="false"><span class="num">+4</span></button>
+            <button class="star" type="button" data-score="5" aria-pressed="false"><span class="num">+5</span></button>
+          </div>
+        </div>
       </div>
 
       <div class="dropzone panel" id="funsDrop">
@@ -591,15 +633,21 @@
     toast('Battle Mode: ' + (!on ? 'ON' : 'OFF'));
   });
 
-  // Stars rating (−5..−1, +1..+5)
-  const stars = Array.from(document.querySelectorAll('.star'));
-  stars.forEach(btn => btn.addEventListener('click', () => {
-    stars.forEach(s => s.classList.remove('active'));
-    btn.classList.add('active');
-    const score = btn.getAttribute('data-score');
-    // Simulate write to memory
-    toast('Saved rating ' + score + ' to Memory');
-  }));
+  // Stars rating (−5..−1, +1..+5) with separate reply/Handy groups
+  const ratingGroups = Array.from(document.querySelectorAll('.rating-group'));
+  ratingGroups.forEach(group => {
+    const label = group.getAttribute('data-rating-label') || 'Rating';
+    const stars = Array.from(group.querySelectorAll('.star'));
+    stars.forEach(btn => btn.addEventListener('click', () => {
+      const score = btn.getAttribute('data-score');
+      stars.forEach(s => {
+        const isActive = s === btn;
+        s.classList.toggle('active', isActive);
+        s.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+      });
+      toast(label + ': ' + score + ' saved to Memory');
+    }));
+  });
 
   // Dropzone (FunScript)
   const drop = document.getElementById('funsDrop');

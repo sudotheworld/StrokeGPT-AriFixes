@@ -199,6 +199,36 @@
   }
   .star .num{ position:relative; z-index:1; }
 
+  .mem-card{
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    margin-top:16px;
+    background: rgba(10, 10, 15, 0.45);
+    border:1px solid rgba(255, 255, 255, 0.12);
+    border-radius: var(--radius-md);
+    padding:12px;
+  }
+  .mem-card .mem-log{
+    max-height:180px;
+    overflow:auto;
+    border:1px solid rgba(255, 255, 255, 0.08);
+    border-radius: var(--radius-sm);
+    padding:8px;
+    background: rgba(0,0,0,0.35);
+    font-size:12px;
+    line-height:1.4;
+  }
+  .mem-card .mem-log pre{
+    margin:0;
+    white-space:pre-wrap;
+    word-break:break-word;
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  }
+  .mem-card .row{
+    align-items:stretch;
+  }
+
   .dropzone{
     margin: 8px 14px 16px 14px;
     border: 2px dashed rgba(255, 0, 150, 0.5);
@@ -449,6 +479,22 @@
           <button id="clearPersona" class="action ghost">Reset</button>
         </div>
 
+        <div class="mem-card" id="memoryPanel">
+          <div>
+            <strong>Persona Memory</strong><br>
+            <span class="small">Record persona notes, ratings, and script metadata.</span>
+          </div>
+          <div class="row">
+            <input id="memoryInput" type="text" placeholder="Add a note for future duels…" />
+            <button class="action ghost" id="memoryAdd">Add</button>
+          </div>
+          <div class="row">
+            <button class="action primary" id="memoryRefresh">View recent</button>
+            <button class="action ghost" id="memorySummarise">Summarise → persona.yaml</button>
+          </div>
+          <div class="mem-log" id="memoryList"><div class="small" style="opacity:.6;">No memory yet</div></div>
+        </div>
+
         <div class="divider"></div>
 
         <div class="collapser" id="agentsToggle" data-open="true" aria-controls="agentsList">
@@ -542,6 +588,165 @@
     setTimeout(()=>{ t.remove(); }, 1400);
   }
 
+  function escapeHtml(str){
+    return (str || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c] || c));
+  }
+
+  async function postMemory({text, tags = []}){
+    const payload = {
+      text: (text || '').trim(),
+      tags: Array.isArray(tags) ? tags : [],
+    };
+    if(!payload.text){
+      throw new Error('empty text');
+    }
+    let res;
+    try{
+      res = await fetch('/api/memory/add', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload),
+      });
+    }catch(err){
+      throw new Error('network error');
+    }
+    let data = {};
+    try{
+      data = await res.json();
+    }catch(err){
+      data = {};
+    }
+    if(!res.ok || !data.ok){
+      throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  async function fetchMemoryRecent(limit = 20){
+    let res;
+    try{
+      res = await fetch(`/api/memory/recent?n=${limit}`);
+    }catch(err){
+      throw new Error('network error');
+    }
+    let data = {};
+    try{
+      data = await res.json();
+    }catch(err){
+      data = {};
+    }
+    if(!res.ok){
+      throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+    return data.items || [];
+  }
+
+  async function summariseMemory(){
+    let res;
+    try{
+      res = await fetch('/api/memory/summarise', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({}),
+      });
+    }catch(err){
+      throw new Error('network error');
+    }
+    let data = {};
+    try{
+      data = await res.json();
+    }catch(err){
+      data = {};
+    }
+    if(!res.ok || !data.ok){
+      throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+    return data.persona_yaml || '';
+  }
+
+  const memoryInput = document.getElementById('memoryInput');
+  const memoryAddBtn = document.getElementById('memoryAdd');
+  const memoryRefreshBtn = document.getElementById('memoryRefresh');
+  const memorySummariseBtn = document.getElementById('memorySummarise');
+  const memoryList = document.getElementById('memoryList');
+
+  async function refreshMemoryPanel(showSpinner = false){
+    if(!memoryList){
+      return;
+    }
+    if(showSpinner){
+      memoryList.innerHTML = '<div class="small" style="opacity:.6;">Loading…</div>';
+    }
+    try{
+      const items = await fetchMemoryRecent(20);
+      const ordered = items.slice().reverse();
+      if(!ordered.length){
+        memoryList.innerHTML = '<div class="small" style="opacity:.6;">No memory yet</div>';
+        return;
+      }
+      memoryList.innerHTML = ordered.map(rec => {
+        const ts = rec.ts ? new Date(rec.ts * 1000).toLocaleString() : 'recent';
+        const tags = Array.isArray(rec.tags) && rec.tags.length
+          ? `<div class="small" style="opacity:.6;">${escapeHtml(rec.tags.join(', '))}</div>`
+          : '';
+        const text = escapeHtml(rec.text || '');
+        return `<div style="padding:4px 0;border-bottom:1px dashed rgba(255,255,255,0.12);">
+          <div style="opacity:.6;font-size:11px;">${escapeHtml(ts)}</div>
+          <div>${text || '<span style="opacity:.6;">(blank)</span>'}</div>
+          ${tags}
+        </div>`;
+      }).join('');
+    }catch(err){
+      memoryList.innerHTML = `<div class="small" style="opacity:.6;">${escapeHtml(err.message || 'Failed to load memory')}</div>`;
+    }
+  }
+
+  memoryAddBtn?.addEventListener('click', async () => {
+    const text = (memoryInput?.value || '').trim();
+    if(!text){
+      toast('Write a note first.');
+      return;
+    }
+    try{
+      await postMemory({ text, tags: ['note'] });
+      toast('Memory saved.');
+      if(memoryInput){ memoryInput.value = ''; }
+      await refreshMemoryPanel();
+    }catch(err){
+      toast('Memory not saved: ' + err.message);
+    }
+  });
+
+  memoryRefreshBtn?.addEventListener('click', () => {
+    refreshMemoryPanel(true);
+  });
+
+  memorySummariseBtn?.addEventListener('click', async () => {
+    if(!memorySummariseBtn){
+      return;
+    }
+    const original = memorySummariseBtn.textContent;
+    memorySummariseBtn.disabled = true;
+    memorySummariseBtn.textContent = 'Summarising…';
+    try{
+      const yaml = await summariseMemory();
+      toast('persona.yaml updated');
+      if(memoryList){
+        const safe = escapeHtml(yaml.trim());
+        memoryList.innerHTML = safe
+          ? `<pre>${safe}</pre>`
+          : '<div class="small" style="opacity:.6;">Summary is empty.</div>';
+      }
+    }catch(err){
+      toast('Summarise failed: ' + err.message);
+    }finally{
+      memorySummariseBtn.disabled = false;
+      memorySummariseBtn.textContent = original;
+    }
+  });
+
+  refreshMemoryPanel(true);
+
   // Collapser
   const agentsToggle = document.getElementById('agentsToggle');
   const agentsList = document.getElementById('agentsList');
@@ -576,6 +781,18 @@
     if(placeholder && agentsList.children.length === 1){ placeholder.remove(); }
     agentsList.appendChild(wrap);
     toast('Agent “'+name+'” added');
+    const personaNote = [
+      `persona:${name}`,
+      role ? `role=${role}` : null,
+      body ? `body=${body}` : null,
+      desc ? `desc=${desc.slice(0,80)}` : null,
+      goal ? `goal=${goal.slice(0,80)}` : null,
+    ].filter(Boolean).join(' | ');
+    if(personaNote){
+      postMemory({ text: personaNote, tags: ['persona'] })
+        .then(()=> refreshMemoryPanel())
+        .catch(err => toast('Memory not saved: ' + err.message));
+    }
   });
   clearPersona?.addEventListener('click', ()=>{
     ['personaName','personaRole','personaDesc','personaGoal'].forEach(id=>document.getElementById(id).value='');
@@ -593,12 +810,19 @@
 
   // Stars rating (−5..−1, +1..+5)
   const stars = Array.from(document.querySelectorAll('.star'));
-  stars.forEach(btn => btn.addEventListener('click', () => {
+  stars.forEach(btn => btn.addEventListener('click', async () => {
     stars.forEach(s => s.classList.remove('active'));
     btn.classList.add('active');
-    const score = btn.getAttribute('data-score');
-    // Simulate write to memory
-    toast('Saved rating ' + score + ' to Memory');
+    const rawScore = btn.getAttribute('data-score') || '0';
+    const numeric = parseInt(rawScore, 10);
+    const formatted = !Number.isNaN(numeric) && numeric > 0 ? `+${numeric}` : rawScore;
+    try{
+      await postMemory({ text: `rating:${formatted}`, tags: ['rating'] });
+      toast('Saved rating ' + formatted + ' to Memory');
+      await refreshMemoryPanel();
+    }catch(err){
+      toast('Rating not saved: ' + err.message);
+    }
   }));
 
   // Dropzone (FunScript)
@@ -611,7 +835,16 @@
     [...files].forEach(f => {
       if(/\.(funscript|json)$/i.test(f.name)) good.push(f.name);
     });
-    if(good.length) toast('Added to Library: ' + good.slice(0,3).join(', ') + (good.length>3?' +…':''));
+    if(good.length){
+      toast('Added to Library: ' + good.slice(0,3).join(', ') + (good.length>3?' +…':''));
+      const clip = good.slice(0,5);
+      postMemory({
+        text: `funscript:${clip.join(', ')}`,
+        tags: ['funscript', 'library']
+      })
+      .then(()=> refreshMemoryPanel())
+      .catch(err => toast('Memory not saved: ' + err.message));
+    }
   }
   finput?.addEventListener('change', (e)=> handleFiles(e.target.files));
   ;['dragover','dragleave','drop'].forEach(evt=> drop.addEventListener(evt, e => {

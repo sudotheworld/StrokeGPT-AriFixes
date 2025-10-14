@@ -6,6 +6,7 @@ import json
 import atexit
 import threading
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template_string, send_file, send_from_directory
@@ -456,6 +457,72 @@ def set_elevenlabs_voice_route():
     ok, message = audio.configure_voice(voice_id, enabled)
     if ok: settings.elevenlabs_voice_id = voice_id; settings.save()
     return jsonify({"status": "ok" if ok else "error", "message": message})
+
+@app.get('/api/themes')
+def list_theme_presets():
+    """Return the saved theme presets."""
+    return jsonify({"presets": settings.theme_presets})
+
+@app.post('/api/themes/generate')
+def generate_theme_preset():
+    """Ask the LLM for a new theme palette and persist it."""
+    palette = llm.generate_theme_palette([p.get('name', '') for p in settings.theme_presets])
+    if not isinstance(palette, dict):
+        return jsonify({"status": "error", "message": "Invalid LLM response"}), 500
+
+    name = palette.get('theme_name') or 'Untitled Theme'
+    colors = {
+        'background': palette.get('background'),
+        'glass': palette.get('glass'),
+        'glass_strong': palette.get('glass_strong'),
+        'text': palette.get('text'),
+        'muted': palette.get('muted'),
+        'edge': palette.get('edge'),
+        'brand_colors': palette.get('brand_colors', []),
+        'ok': palette.get('ok'),
+        'warn': palette.get('warn'),
+        'bad': palette.get('bad'),
+    }
+
+    required_keys = ['background', 'glass', 'glass_strong', 'text', 'muted', 'edge', 'ok', 'warn', 'bad']
+    if any(not colors.get(key) for key in required_keys):
+        return jsonify({"status": "error", "message": "LLM response missing required colours"}), 500
+
+    brand_colors = [c.strip() for c in colors.get('brand_colors', []) if isinstance(c, str) and c.strip()]
+    if not brand_colors:
+        brand_colors = ['#ff00a0', '#00ffff', '#00ff87', '#ffd166', '#c4a5ff']
+    while len(brand_colors) < 5:
+        brand_colors.append(brand_colors[-1])
+    colors['brand_colors'] = brand_colors[:5]
+
+    preset = {
+        'id': str(uuid.uuid4()),
+        'name': name,
+        'colors': colors,
+        'created_at': time.time(),
+        'screenshot': '',
+    }
+
+    settings.theme_presets.append(preset)
+    if len(settings.theme_presets) > 20:
+        settings.theme_presets = settings.theme_presets[-20:]
+    settings.save()
+    return jsonify({"status": "success", "preset": preset})
+
+@app.post('/api/themes/<preset_id>/screenshot')
+def attach_theme_screenshot(preset_id: str):
+    data = request.get_json(silent=True) or {}
+    image_data = data.get('image', '').strip()
+    if not image_data:
+        return jsonify({"status": "error", "message": "Missing screenshot"}), 400
+
+    for preset in settings.theme_presets:
+        if preset.get('id') == preset_id:
+            preset['screenshot'] = image_data
+            settings.save()
+            return jsonify({"status": "success"})
+
+    return jsonify({"status": "error", "message": "Theme not found"}), 404
 
 @app.route('/get_updates')
 def get_ui_updates_route():

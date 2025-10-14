@@ -6,9 +6,15 @@ import json
 import atexit
 import threading
 import time
+import uuid
 from collections import deque
+from datetime import datetime
 from pathlib import Path
+from queue import Queue
+from typing import Optional
+
 from flask import Flask, request, jsonify, render_template_string, send_file, send_from_directory
+from werkzeug.utils import secure_filename
 from config import Config
 
 from settings_manager import SettingsManager
@@ -51,6 +57,298 @@ edging_start_time = None
 # A global instance of MemoryManager is created here.  It is used to
 # store events from the persona and recall context when building prompts.
 mem = MemoryManager()
+
+# -------------------------------------------------------------------------
+# FunScript catalog state and helpers
+FUNSCRIPT_DIR = Path("funscripts")
+FUNSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+FUNSCRIPT_CATALOG_FILE = FUNSCRIPT_DIR / "catalog.json"
+funscript_catalog_lock = threading.Lock()
+funscript_catalog: dict[str, dict] = {}
+funscript_queue = Queue()
+funscript_worker_thread = None
+
+
+def _now_iso() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _ensure_funscript_defaults(entry: dict) -> dict:
+    entry.setdefault("tags", [])
+    entry.setdefault("patterns", [])
+    entry.setdefault("favorite", False)
+    entry.setdefault("duration_seconds", None)
+    entry.setdefault("action_count", None)
+    entry.setdefault("status", "queued")
+    entry.setdefault("error", None)
+    entry.setdefault("created_at", _now_iso())
+    entry.setdefault("updated_at", entry["created_at"])
+    analysis = entry.get("analysis")
+    if not isinstance(analysis, dict):
+        analysis = {}
+    analysis.setdefault("summary", None)
+    analysis.setdefault("generated_at", None)
+    analysis.setdefault("metrics", {})
+    analysis.setdefault("stale", entry.get("status") != "ready")
+    entry["analysis"] = analysis
+    return entry
+
+
+def load_funscript_catalog() -> None:
+    global funscript_catalog
+    if not FUNSCRIPT_CATALOG_FILE.exists():
+        funscript_catalog = {}
+        return
+    try:
+        with open(FUNSCRIPT_CATALOG_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        loaded: dict[str, dict] = {}
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and item.get("id"):
+                    loaded[item["id"]] = _ensure_funscript_defaults(item)
+        elif isinstance(data, dict):
+            for sid, item in data.items():
+                if isinstance(item, dict):
+                    item.setdefault("id", sid)
+                    loaded[sid] = _ensure_funscript_defaults(item)
+        funscript_catalog = loaded
+    except Exception as exc:  # pragma: no cover - defensive logging
+        print(f"Failed to load FunScript catalog: {exc}")
+        funscript_catalog = {}
+
+
+def save_funscript_catalog() -> None:
+    with funscript_catalog_lock:
+        snapshot = [entry for entry in funscript_catalog.values()]
+    try:
+        with open(FUNSCRIPT_CATALOG_FILE, "w", encoding="utf-8") as fh:
+            json.dump(snapshot, fh, indent=2)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        print(f"Failed to save FunScript catalog: {exc}")
+
+
+def _public_funscript_entry(entry: dict) -> dict:
+    return {
+        "id": entry.get("id"),
+        "name": entry.get("name"),
+        "status": entry.get("status"),
+        "duration_seconds": entry.get("duration_seconds"),
+        "action_count": entry.get("action_count"),
+        "patterns": entry.get("patterns", []),
+        "tags": entry.get("tags", []),
+        "favorite": entry.get("favorite", False),
+        "analysis": entry.get("analysis", {}),
+        "error": entry.get("error"),
+        "created_at": entry.get("created_at"),
+        "updated_at": entry.get("updated_at"),
+    }
+
+
+def enqueue_funscript(script_id: str) -> None:
+    funscript_queue.put(script_id)
+
+
+def _detect_patterns(positions: list[float], intervals: list[float], duration_seconds: Optional[float]) -> list[str]:
+    hints: list[str] = []
+    if positions:
+        max_pos = max(positions)
+        min_pos = min(positions)
+        amplitude = max_pos - min_pos
+        if amplitude < 20:
+            hints.append("Tip play / tease")
+        elif amplitude > 60:
+            hints.append("Full strokes")
+        else:
+            hints.append("Mid-range strokes")
+        mean_pos = sum(positions) / len(positions)
+        if mean_pos > 70:
+            hints.append("Deep leaning")
+        elif mean_pos < 30:
+            hints.append("Shallow leaning")
+    if intervals:
+        avg_interval = sum(intervals) / len(intervals)
+        if avg_interval < 0.09:
+            hints.append("Blistering tempo")
+        elif avg_interval < 0.17:
+            hints.append("Fast tempo")
+        elif avg_interval > 0.45:
+            hints.append("Slow build")
+        else:
+            hints.append("Steady rhythm")
+    if duration_seconds:
+        if duration_seconds > 600:
+            hints.append("Marathon length")
+        elif duration_seconds > 300:
+            hints.append("Extended session")
+    # Deduplicate while preserving order
+    seen = set()
+    ordered = []
+    for hint in hints:
+        if hint not in seen:
+            seen.add(hint)
+            ordered.append(hint)
+    return ordered
+
+
+def _mark_funscript_error(script_id: str, message: str) -> None:
+    with funscript_catalog_lock:
+        entry = funscript_catalog.get(script_id)
+        if not entry:
+            return
+        entry['status'] = 'error'
+        entry['error'] = message
+        entry['updated_at'] = _now_iso()
+        analysis = entry.get('analysis', {})
+        analysis['summary'] = None
+        analysis['generated_at'] = None
+        analysis['metrics'] = {}
+        analysis['stale'] = False
+        entry['analysis'] = analysis
+    save_funscript_catalog()
+
+
+def _process_funscript(script_id: str) -> None:
+    with funscript_catalog_lock:
+        entry = funscript_catalog.get(script_id)
+        if not entry:
+            return
+        entry.setdefault('analysis', {})['stale'] = True
+        entry['status'] = 'processing'
+        entry['error'] = None
+        entry['updated_at'] = _now_iso()
+        stored_name = entry.get('stored_name') or entry.get('filename')
+    save_funscript_catalog()
+
+    if not stored_name:
+        _mark_funscript_error(script_id, "No stored file reference for FunScript.")
+        return
+
+    file_path = FUNSCRIPT_DIR / stored_name
+    if not file_path.exists():
+        _mark_funscript_error(script_id, "FunScript file is missing from storage.")
+        return
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as exc:
+        _mark_funscript_error(script_id, f"Failed to parse FunScript: {exc}")
+        return
+
+    raw_actions = data.get('actions')
+    if not isinstance(raw_actions, list):
+        raw_actions = []
+    actions = [a for a in raw_actions if isinstance(a, dict)]
+    action_count = len(actions)
+    if action_count == 0:
+        _mark_funscript_error(script_id, "No actions found in FunScript file.")
+        return
+
+    times = [float(a['at']) for a in actions if isinstance(a.get('at'), (int, float))]
+    positions = []
+    for action in actions:
+        pos = action.get('pos')
+        if pos is None:
+            pos = action.get('position')
+        if isinstance(pos, (int, float)):
+            positions.append(float(pos))
+
+    duration_seconds = round(max(times) / 1000.0, 2) if times else None
+    sorted_times = sorted(times)
+    intervals = []
+    prev_time = None
+    for ts in sorted_times:
+        if prev_time is not None:
+            intervals.append((ts - prev_time) / 1000.0)
+        prev_time = ts
+
+    normalized_positions = positions[:]
+    if normalized_positions:
+        max_pos = max(normalized_positions)
+        if max_pos <= 1.5:  # normalise 0-1 or 0-1.0 values
+            normalized_positions = [round(p * 100.0, 3) for p in normalized_positions]
+    patterns = _detect_patterns(normalized_positions, intervals, duration_seconds)
+
+    avg_interval = sum(intervals) / len(intervals) if intervals else None
+    avg_interval_ms = round(avg_interval * 1000.0, 2) if avg_interval else None
+    tempo_bpm = round(60.0 / avg_interval, 2) if avg_interval and avg_interval > 0 else None
+    amplitude = None
+    mean_position = None
+    if normalized_positions:
+        amplitude = round(max(normalized_positions) - min(normalized_positions), 2)
+        mean_position = round(sum(normalized_positions) / len(normalized_positions), 2)
+
+    summary_parts = [f"{action_count} actions"]
+    if duration_seconds:
+        summary_parts.append(f"over {duration_seconds:.1f}s")
+    if tempo_bpm:
+        summary_parts.append(f"~{tempo_bpm:.0f} BPM tempo")
+    if patterns:
+        summary_parts.append(", ".join(patterns[:3]))
+    summary = "; ".join(summary_parts) if summary_parts else "FunScript processed."
+
+    analysis = {
+        "summary": summary,
+        "generated_at": _now_iso(),
+        "metrics": {
+            "avg_interval_ms": avg_interval_ms,
+            "tempo_bpm": tempo_bpm,
+            "amplitude": amplitude,
+            "mean_position": mean_position,
+        },
+        "stale": False,
+    }
+
+    with funscript_catalog_lock:
+        entry = funscript_catalog.get(script_id)
+        if not entry:
+            return
+        entry['status'] = 'ready'
+        entry['duration_seconds'] = duration_seconds
+        entry['action_count'] = action_count
+        entry['patterns'] = patterns
+        entry['error'] = None
+        entry['analysis'] = analysis
+        entry['updated_at'] = analysis['generated_at']
+    save_funscript_catalog()
+
+
+def _funscript_worker() -> None:
+    while True:
+        script_id = funscript_queue.get()
+        try:
+            if script_id is None:
+                return
+            _process_funscript(script_id)
+        finally:
+            funscript_queue.task_done()
+
+
+def _start_funscript_worker() -> None:
+    global funscript_worker_thread
+    if funscript_worker_thread is None or not funscript_worker_thread.is_alive():
+        funscript_worker_thread = threading.Thread(target=_funscript_worker, name="funscript-worker", daemon=True)
+        funscript_worker_thread.start()
+
+
+def _requeue_incomplete_funscripts() -> None:
+    with funscript_catalog_lock:
+        pending = [sid for sid, entry in funscript_catalog.items() if entry.get('status') in {'queued', 'processing'}]
+        for sid in pending:
+            entry = funscript_catalog[sid]
+            entry['status'] = 'queued'
+            entry.setdefault('analysis', {})['stale'] = True
+            entry['updated_at'] = _now_iso()
+    for sid in pending:
+        enqueue_funscript(sid)
+    if pending:
+        save_funscript_catalog()
+
+
+load_funscript_catalog()
+_start_funscript_worker()
+_requeue_incomplete_funscripts()
 
 # -------------------------------------------------------------------------
 # Feedback and A/B state persistence
@@ -172,6 +470,136 @@ def health():
         "ollama_url": Config.OLLAMA_URL,
         "handy_key_set": bool(handy.handy_key),
     })
+
+
+# -------------------------------------------------------------------------
+# FunScript catalog endpoints
+
+
+@app.get("/api/funscripts")
+def list_funscripts():
+    with funscript_catalog_lock:
+        items = [_public_funscript_entry(entry) for entry in funscript_catalog.values()]
+    items.sort(key=lambda e: e.get("updated_at") or e.get("created_at") or "", reverse=True)
+    return jsonify({"items": items})
+
+
+@app.post("/api/funscripts")
+def upload_funscripts():
+    files = request.files.getlist('files')
+    if not files:
+        return jsonify({"error": "No files provided."}), 400
+
+    created: list[dict] = []
+    errors: list[str] = []
+    allowed_ext = {'.funscript', '.json'}
+
+    for storage in files:
+        if not storage or not storage.filename:
+            errors.append("Skipping unnamed upload.")
+            continue
+        ext = Path(storage.filename).suffix.lower()
+        if ext not in allowed_ext:
+            errors.append(f"Unsupported file type for {storage.filename}.")
+            continue
+
+        script_id = uuid.uuid4().hex
+        safe_name = secure_filename(storage.filename) or f"funscript-{script_id}{ext or '.funscript'}"
+        if not Path(safe_name).suffix:
+            safe_name = f"{safe_name}{ext or '.funscript'}"
+        stored_name = f"{script_id}_{safe_name}"
+        destination = FUNSCRIPT_DIR / stored_name
+
+        try:
+            storage.save(destination)
+        except Exception as exc:
+            errors.append(f"Failed to save {storage.filename}: {exc}")
+            if destination.exists():
+                try:
+                    destination.unlink()
+                except Exception:
+                    pass
+            continue
+
+        entry = _ensure_funscript_defaults({
+            "id": script_id,
+            "name": storage.filename,
+            "stored_name": stored_name,
+            "status": "queued",
+            "analysis": {"summary": None, "generated_at": None, "metrics": {}, "stale": True},
+        })
+        with funscript_catalog_lock:
+            funscript_catalog[script_id] = entry
+        created.append(entry)
+        enqueue_funscript(script_id)
+
+    if created:
+        save_funscript_catalog()
+
+    status_code = 201 if created else 400
+    return jsonify({
+        "items": [_public_funscript_entry(entry) for entry in created],
+        "errors": errors,
+    }), status_code
+
+
+@app.post("/api/funscripts/<script_id>/tag")
+def tag_funscript(script_id: str):
+    payload = request.get_json(silent=True) or {}
+    tag = (payload.get('tag') or '').strip()
+    if not tag:
+        return jsonify({"error": "Tag is required."}), 400
+    action = (payload.get('action') or 'add').lower()
+    normalized = tag.lstrip('#').strip()
+    if not normalized:
+        return jsonify({"error": "Tag is required."}), 400
+
+    with funscript_catalog_lock:
+        entry = funscript_catalog.get(script_id)
+        if not entry:
+            return jsonify({"error": "FunScript not found."}), 404
+        tags = entry.setdefault('tags', [])
+        if action == 'remove':
+            tags = [existing for existing in tags if existing.lower() != normalized.lower()]
+            entry['tags'] = tags
+        else:
+            if not any(existing.lower() == normalized.lower() for existing in tags):
+                tags.append(normalized)
+        entry['updated_at'] = _now_iso()
+        public_entry = _public_funscript_entry(entry)
+    save_funscript_catalog()
+    return jsonify({"item": public_entry})
+
+
+@app.post("/api/funscripts/<script_id>/favorite")
+def favorite_funscript(script_id: str):
+    payload = request.get_json(silent=True) or {}
+    favorite = bool(payload.get('favorite'))
+    with funscript_catalog_lock:
+        entry = funscript_catalog.get(script_id)
+        if not entry:
+            return jsonify({"error": "FunScript not found."}), 404
+        entry['favorite'] = favorite
+        entry['updated_at'] = _now_iso()
+        public_entry = _public_funscript_entry(entry)
+    save_funscript_catalog()
+    return jsonify({"item": public_entry})
+
+
+@app.post("/api/funscripts/<script_id>/reanalyze")
+def reanalyze_funscript(script_id: str):
+    with funscript_catalog_lock:
+        entry = funscript_catalog.get(script_id)
+        if not entry:
+            return jsonify({"error": "FunScript not found."}), 404
+        entry['status'] = 'queued'
+        entry.setdefault('analysis', {})['stale'] = True
+        entry['error'] = None
+        entry['updated_at'] = _now_iso()
+        public_entry = _public_funscript_entry(entry)
+    save_funscript_catalog()
+    enqueue_funscript(script_id)
+    return jsonify({"item": public_entry})
 
 # -------------------------------------------------------------------------
 # Feedback and A/B choice helpers and endpoints
@@ -510,8 +938,16 @@ def stop_auto_route():
 
 # ─── APP STARTUP ───────────────────────────────────────────────────────────────────────────────────
 def on_exit():
+    global funscript_worker_thread
     print("⏳ Saving settings on exit...")
     settings.save(llm, chat_history)
+    save_funscript_catalog()
+    try:
+        funscript_queue.put_nowait(None)
+    except Exception:
+        pass
+    if funscript_worker_thread is not None:
+        funscript_worker_thread.join(timeout=3)
     print("✅ Settings saved.")
 
 if __name__ == '__main__':

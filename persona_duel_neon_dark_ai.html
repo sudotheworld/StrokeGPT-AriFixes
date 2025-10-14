@@ -206,7 +206,9 @@
     padding: 16px;
     background: rgba(0,0,0,0.2);
     display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+    transition: border-color .3s ease;
   }
+  .dropzone[data-loading="true"]{ border-color: var(--brand2); }
   .dropzone .hint{ color: var(--muted); font-size: 12px; }
   .dropzone .chipbtn{
     border: 1px solid var(--edge); border-radius: var(--chip);
@@ -214,6 +216,64 @@
     padding:10px 14px; cursor:pointer; font-weight:800;
   }
   .dropzone .chipbtn:hover { filter: brightness(1.2); }
+  .dropzone .statusline{ flex:1 1 100%; font-size:12px; color:var(--muted); margin-top:6px; }
+
+  .funscripts-panel h3{ margin-top:0; }
+  .funscripts-header{ display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px; }
+  .funscripts-header .small{ flex:1; }
+  .funscripts-list{ display:flex; flex-direction:column; gap:12px; margin-top:8px; }
+  .funscript-item{
+    border:1px solid rgba(255,255,255,.12);
+    border-radius: var(--radius-md);
+    padding:12px;
+    background: rgba(10,10,15,.55);
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+  }
+  .funscript-item[data-status="processing"],
+  .funscript-item[data-status="queued"],
+  .funscript-item[data-status="uploading"]{ border-color: rgba(0,255,255,.35); }
+  .funscript-item[data-status="error"]{ border-color: var(--bad); }
+  .funscript-meta{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+  .funscript-meta h4{ margin:0; font-size:14px; }
+  .funscript-status{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    padding:4px 10px;
+    border-radius: var(--chip);
+    font-size:11px;
+    font-weight:700;
+    text-transform:uppercase;
+    letter-spacing:.4px;
+    background: rgba(255,255,255,.08);
+    border:1px solid rgba(255,255,255,.12);
+  }
+  .funscript-status.ready{ border-color: rgba(0,255,128,.4); color:#9ef7c9; }
+  .funscript-status.processing, .funscript-status.queued, .funscript-status.uploading{ border-color: rgba(0,255,255,.4); color:#aef7ff; }
+  .funscript-status.error{ border-color: rgba(255,77,126,.5); color:#ff9ab7; }
+  .funscript-details{ font-size:12px; color: var(--muted); }
+  .funscript-tags{ display:flex; flex-wrap:wrap; gap:6px; }
+  .tagchip{
+    border:1px solid rgba(255,255,255,.15);
+    border-radius: var(--chip);
+    background: rgba(20,20,25,.6);
+    color: var(--text);
+    padding:4px 10px;
+    font-size:11px;
+    cursor:pointer;
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+  }
+  .tagchip:hover{ filter:brightness(1.2); }
+  .tagchip[data-action="remove-tag"]{ background: rgba(255,0,160,.1); border-color: rgba(255,0,160,.35); }
+  .funscript-actions{ display:flex; flex-wrap:wrap; gap:8px; }
+  .chipbtn.favorite-btn.active{ background: linear-gradient(90deg,var(--brand1),var(--brand2)); color:#fff; border-color: rgba(255,255,255,.4); }
+  .funscript-actions .chipbtn:disabled{ opacity:0.6; cursor:not-allowed; }
+  .error-text{ color: var(--bad); font-size:12px; }
+  .muted{ color: var(--muted); }
 
   /* PiP Browser (draggable + resizable) */
   .pip{
@@ -407,10 +467,21 @@
           <button class="chipbtn" id="browseFuns">Add Files</button>
           <input id="funsInput" type="file" accept=".funscript,.json" multiple style="display:none" />
         </div>
+        <div class="statusline" id="funsDropStatus" aria-live="polite"></div>
       </div>
     </main>
 
     <aside class="panel right">
+      <div class="section funscripts-panel">
+        <div class="funscripts-header">
+          <h3>FunScript Catalog</h3>
+          <button class="chipbtn" id="refreshFunscripts" type="button">Refresh</button>
+        </div>
+        <div class="small muted">Uploads are analyzed in the background. Cached summaries update as processing completes.</div>
+        <div id="funscriptsList" class="funscripts-list">
+          <div class="small muted">No FunScripts cataloged yet.</div>
+        </div>
+      </div>
       <div class="section persona-card">
         <h3>Persona Creator</h3>
         <div class="field">
@@ -601,28 +672,436 @@
     toast('Saved rating ' + score + ' to Memory');
   }));
 
-  // Dropzone (FunScript)
+  // Dropzone (FunScript) & Catalog UI
   const drop = document.getElementById('funsDrop');
+  const dropStatus = document.getElementById('funsDropStatus');
   const browse = document.getElementById('browseFuns');
   const finput = document.getElementById('funsInput');
-  browse?.addEventListener('click', ()=> finput.click());
-  function handleFiles(files){
-    const good = [];
-    [...files].forEach(f => {
-      if(/\.(funscript|json)$/i.test(f.name)) good.push(f.name);
-    });
-    if(good.length) toast('Added to Library: ' + good.slice(0,3).join(', ') + (good.length>3?' +…':''));
+  const funsList = document.getElementById('funscriptsList');
+  const refreshFuns = document.getElementById('refreshFunscripts');
+  const funscriptState = new Map();
+  let funscriptPollTimer = null;
+  let funscriptLastFetchFailed = false;
+  let uploadTempCounter = 0;
+
+  const STATUS_LABELS = {
+    ready: 'Ready',
+    processing: 'Processing',
+    queued: 'Queued',
+    uploading: 'Uploading',
+    error: 'Error'
+  };
+
+  function normalizeEntry(raw){
+    if(!raw) return raw;
+    const entry = { ...raw };
+    entry.tags = Array.isArray(entry.tags) ? [...entry.tags] : [];
+    entry.patterns = Array.isArray(entry.patterns) ? [...entry.patterns] : [];
+    const analysis = (raw.analysis && typeof raw.analysis === 'object') ? { ...raw.analysis } : {};
+    if(typeof analysis.metrics !== 'object' || analysis.metrics === null) analysis.metrics = {};
+    if(typeof analysis.stale !== 'boolean') analysis.stale = raw.status !== 'ready';
+    if(!('summary' in analysis)) analysis.summary = null;
+    if(!('generated_at' in analysis)) analysis.generated_at = null;
+    entry.analysis = analysis;
+    entry.favorite = Boolean(raw.favorite);
+    entry.duration_seconds = typeof raw.duration_seconds === 'number' ? raw.duration_seconds : null;
+    entry.action_count = typeof raw.action_count === 'number' ? raw.action_count : null;
+    entry.error = raw.error || null;
+    entry.status = (raw.status || 'queued').toLowerCase();
+    return entry;
   }
-  finput?.addEventListener('change', (e)=> handleFiles(e.target.files));
-  ;['dragover','dragleave','drop'].forEach(evt=> drop.addEventListener(evt, e => {
+
+  function setDropStatus(message, loading=false){
+    if(dropStatus){ dropStatus.textContent = message || ''; }
+    if(drop){
+      if(loading){ drop.setAttribute('data-loading', 'true'); }
+      else { drop.removeAttribute('data-loading'); }
+    }
+  }
+
+  function formatDuration(seconds){
+    if(typeof seconds !== 'number' || Number.isNaN(seconds)) return '–';
+    const total = Math.max(0, Math.round(seconds));
+    const mins = Math.floor(total / 60);
+    const secs = total % 60;
+    if(mins && secs) return `${mins}m ${secs}s`;
+    if(mins) return `${mins}m`;
+    return `${secs}s`;
+  }
+
+  function formatDateTime(iso){
+    if(!iso) return '';
+    const d = new Date(iso);
+    if(Number.isNaN(d.getTime())) return '';
+    return d.toLocaleString();
+  }
+
+  function renderFunscripts(){
+    if(!funsList) return;
+    const items = Array.from(funscriptState.values());
+    funsList.innerHTML = '';
+    if(!items.length){
+      const empty = document.createElement('div');
+      empty.className = 'small muted';
+      empty.textContent = 'No FunScripts cataloged yet.';
+      funsList.appendChild(empty);
+      return;
+    }
+
+    items.sort((a, b) => {
+      const aTime = Date.parse(a.updated_at || a.created_at || '') || 0;
+      const bTime = Date.parse(b.updated_at || b.created_at || '') || 0;
+      return bTime - aTime;
+    });
+
+    items.forEach(item => {
+      const card = document.createElement('div');
+      const statusKey = (item.optimistic ? 'uploading' : item.status || 'queued').toLowerCase();
+      card.className = 'funscript-item';
+      card.dataset.status = statusKey;
+
+      const meta = document.createElement('div');
+      meta.className = 'funscript-meta';
+
+      const titleWrap = document.createElement('div');
+      const title = document.createElement('h4');
+      title.textContent = item.name || 'Unnamed FunScript';
+      titleWrap.appendChild(title);
+
+      const statusChip = document.createElement('div');
+      statusChip.className = `funscript-status ${statusKey}`;
+      statusChip.textContent = STATUS_LABELS[statusKey] || (item.status || 'Queued');
+
+      meta.appendChild(titleWrap);
+      meta.appendChild(statusChip);
+      card.appendChild(meta);
+
+      const detailBits = [];
+      if(typeof item.duration_seconds === 'number') detailBits.push(`Duration ${formatDuration(item.duration_seconds)}`);
+      if(typeof item.action_count === 'number' && item.action_count > 0) detailBits.push(`${item.action_count} actions`);
+      if(item.analysis && item.analysis.generated_at){
+        const formatted = formatDateTime(item.analysis.generated_at);
+        if(formatted) detailBits.push(`Last analyzed ${formatted}`);
+      }
+      if(detailBits.length){
+        const info = document.createElement('div');
+        info.className = 'funscript-details';
+        info.textContent = detailBits.join(' • ');
+        card.appendChild(info);
+      }
+
+      if(item.patterns && item.patterns.length){
+        const patternInfo = document.createElement('div');
+        patternInfo.className = 'funscript-details';
+        patternInfo.textContent = `Patterns: ${item.patterns.join(', ')}`;
+        card.appendChild(patternInfo);
+      }
+
+      const analysis = item.analysis || {};
+      if(analysis.summary){
+        const summary = document.createElement('div');
+        summary.className = 'small';
+        summary.textContent = analysis.summary + (analysis.stale && statusKey !== 'ready' ? ' (cached)' : '');
+        card.appendChild(summary);
+      } else if(statusKey === 'ready'){
+        const summary = document.createElement('div');
+        summary.className = 'small muted';
+        summary.textContent = 'Analysis pending…';
+        card.appendChild(summary);
+      }
+
+      if(statusKey === 'error' && item.error){
+        const err = document.createElement('div');
+        err.className = 'error-text';
+        err.textContent = item.error;
+        card.appendChild(err);
+      }
+
+      const tagsWrap = document.createElement('div');
+      tagsWrap.className = 'funscript-tags';
+      if(item.tags && item.tags.length){
+        item.tags.forEach(tag => {
+          const tagBtn = document.createElement('button');
+          tagBtn.type = 'button';
+          tagBtn.className = 'tagchip';
+          tagBtn.dataset.action = 'remove-tag';
+          tagBtn.dataset.id = item.id;
+          tagBtn.dataset.tag = tag;
+          tagBtn.textContent = `#${tag}`;
+          tagsWrap.appendChild(tagBtn);
+        });
+      } else {
+        const noTag = document.createElement('div');
+        noTag.className = 'small muted';
+        noTag.textContent = 'No tags yet.';
+        tagsWrap.appendChild(noTag);
+      }
+      card.appendChild(tagsWrap);
+
+      const actions = document.createElement('div');
+      actions.className = 'funscript-actions';
+
+      const tagBtn = document.createElement('button');
+      tagBtn.type = 'button';
+      tagBtn.className = 'chipbtn';
+      tagBtn.dataset.action = 'tag';
+      tagBtn.dataset.id = item.id;
+      tagBtn.textContent = 'Add tag';
+      actions.appendChild(tagBtn);
+
+      const favBtn = document.createElement('button');
+      favBtn.type = 'button';
+      favBtn.className = 'chipbtn favorite-btn' + (item.favorite ? ' active' : '');
+      favBtn.dataset.action = 'favorite';
+      favBtn.dataset.id = item.id;
+      favBtn.dataset.favorite = item.favorite ? 'true' : 'false';
+      favBtn.textContent = item.favorite ? '★ Favorite' : '☆ Favorite';
+      actions.appendChild(favBtn);
+
+      const reBtn = document.createElement('button');
+      reBtn.type = 'button';
+      reBtn.className = 'chipbtn';
+      reBtn.dataset.action = 'reanalyze';
+      reBtn.dataset.id = item.id;
+      const waiting = ['processing','queued','uploading'].includes(statusKey);
+      reBtn.disabled = waiting;
+      reBtn.textContent = waiting ? 'Re-analyze (pending)' : 'Re-analyze';
+      actions.appendChild(reBtn);
+
+      card.appendChild(actions);
+      funsList.appendChild(card);
+    });
+  }
+
+  function filterFunScriptFiles(list){
+    return Array.from(list || []).filter(file => /\.(funscript|json)$/i.test(file.name || ''));
+  }
+
+  async function fetchFunscripts(manual=false){
+    try {
+      const resp = await fetch('/api/funscripts');
+      if(!resp.ok){
+        const text = await resp.text();
+        throw new Error(text || 'Request failed');
+      }
+      const data = await resp.json();
+      const optimistic = Array.from(funscriptState.entries()).filter(([, value]) => value.optimistic);
+      funscriptState.clear();
+      if(data && Array.isArray(data.items)){
+        data.items.forEach(item => {
+          const normalized = normalizeEntry(item);
+          funscriptState.set(normalized.id, normalized);
+        });
+      }
+      optimistic.forEach(([id, entry]) => funscriptState.set(id, entry));
+      renderFunscripts();
+      if(funscriptLastFetchFailed && !manual){
+        toast('FunScript status reconnected');
+      }
+      funscriptLastFetchFailed = false;
+    } catch (err) {
+      if(manual || !funscriptLastFetchFailed){
+        toast('Failed to refresh FunScripts: ' + (err?.message || err));
+      }
+      funscriptLastFetchFailed = true;
+    }
+  }
+
+  async function updateTag(id, tag, mode){
+    if(!tag) return;
+    try {
+      const resp = await fetch(`/api/funscripts/${id}/tag`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag, action: mode === 'remove' ? 'remove' : 'add' })
+      });
+      if(!resp.ok){
+        const text = await resp.text();
+        throw new Error(text || 'Failed to update tag');
+      }
+      const data = await resp.json();
+      if(data && data.item){
+        const normalized = normalizeEntry(data.item);
+        funscriptState.set(normalized.id, normalized);
+        renderFunscripts();
+        toast(mode === 'remove' ? `Removed #${tag}` : `Tagged #${tag}`);
+      }
+    } catch (err) {
+      toast('Tag update failed: ' + (err?.message || err));
+    }
+  }
+
+  async function updateFavorite(id, value){
+    try {
+      const resp = await fetch(`/api/funscripts/${id}/favorite`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ favorite: value })
+      });
+      if(!resp.ok){
+        const text = await resp.text();
+        throw new Error(text || 'Failed to update favorite');
+      }
+      const data = await resp.json();
+      if(data && data.item){
+        const normalized = normalizeEntry(data.item);
+        funscriptState.set(normalized.id, normalized);
+        renderFunscripts();
+        toast(value ? 'Marked favorite' : 'Favorite removed');
+      }
+    } catch (err) {
+      toast('Favorite update failed: ' + (err?.message || err));
+    }
+  }
+
+  async function requestReanalysis(id){
+    try {
+      const resp = await fetch(`/api/funscripts/${id}/reanalyze`, { method: 'POST' });
+      if(!resp.ok){
+        const text = await resp.text();
+        throw new Error(text || 'Failed to queue re-analysis');
+      }
+      const data = await resp.json();
+      if(data && data.item){
+        const normalized = normalizeEntry(data.item);
+        funscriptState.set(normalized.id, normalized);
+        renderFunscripts();
+        toast('Re-analysis requested');
+        fetchFunscripts();
+      }
+    } catch (err) {
+      toast('Re-analysis failed: ' + (err?.message || err));
+    }
+  }
+
+  function handleSelectedFiles(list){
+    const accepted = filterFunScriptFiles(list);
+    if(!accepted.length){
+      setDropStatus('Only .funscript or .json files are supported.');
+      toast('No valid FunScript files detected');
+      return;
+    }
+    setDropStatus(`Uploading ${accepted.length} file${accepted.length > 1 ? 's' : ''}…`, true);
+    uploadFunScripts(accepted);
+  }
+
+  async function uploadFunScripts(files){
+    if(!files.length) return;
+    const optimisticEntries = files.map(file => {
+      const tempId = `temp-${Date.now()}-${uploadTempCounter++}`;
+      const entry = normalizeEntry({
+        id: tempId,
+        name: file.name,
+        status: 'uploading',
+        duration_seconds: null,
+        patterns: [],
+        tags: [],
+        favorite: false,
+        analysis: { summary: null, generated_at: null, metrics: {}, stale: true },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+      entry.optimistic = true;
+      funscriptState.set(tempId, entry);
+      return entry;
+    });
+    renderFunscripts();
+
+    const formData = new FormData();
+    files.forEach(file => formData.append('files', file));
+
+    try {
+      const resp = await fetch('/api/funscripts', { method: 'POST', body: formData });
+      if(!resp.ok){
+        const text = await resp.text();
+        throw new Error(text || 'Upload failed');
+      }
+      const data = await resp.json();
+      optimisticEntries.forEach(entry => funscriptState.delete(entry.id));
+      if(data && Array.isArray(data.items)){
+        data.items.forEach(item => {
+          const normalized = normalizeEntry(item);
+          funscriptState.set(normalized.id, normalized);
+        });
+      }
+      if(data && Array.isArray(data.errors)){
+        data.errors.filter(Boolean).forEach(msg => toast(msg));
+      }
+      renderFunscripts();
+      setDropStatus('Files uploaded. Analysis queued.');
+      toast(`Queued ${files.length} FunScript${files.length > 1 ? 's' : ''} for analysis`);
+      fetchFunscripts();
+    } catch (err) {
+      optimisticEntries.forEach(entry => funscriptState.delete(entry.id));
+      renderFunscripts();
+      setDropStatus('Upload failed.');
+      toast('Upload failed: ' + (err?.message || err));
+    } finally {
+      if(drop) drop.removeAttribute('data-loading');
+      if(finput) finput.value = '';
+    }
+  }
+
+  browse?.addEventListener('click', () => finput?.click());
+  finput?.addEventListener('change', (e) => {
+    if(e.target?.files?.length){ handleSelectedFiles(e.target.files); }
+    e.target.value = '';
+  });
+
+  ['dragover','dragleave','drop'].forEach(evt => drop?.addEventListener(evt, e => {
     e.preventDefault(); e.stopPropagation();
-    if(evt === 'dragover'){ drop.style.borderColor = 'var(--brand1)'; }
-    if(evt === 'dragleave'){ drop.style.borderColor = 'rgba(255, 0, 150, 0.5)'; }
+    if(evt === 'dragover'){
+      drop.style.borderColor = 'var(--brand1)';
+    }
+    if(evt === 'dragleave'){
+      drop.style.borderColor = 'rgba(255, 0, 150, 0.5)';
+    }
     if(evt === 'drop'){
       drop.style.borderColor = 'rgba(255, 0, 150, 0.5)';
-      handleFiles(e.dataTransfer.files);
+      if(e.dataTransfer?.files?.length){ handleSelectedFiles(e.dataTransfer.files); }
     }
   }));
+
+  document.addEventListener('paste', e => {
+    if(e.clipboardData?.files?.length){ handleSelectedFiles(e.clipboardData.files); }
+  });
+
+  refreshFuns?.addEventListener('click', () => fetchFunscripts(true));
+
+  funsList?.addEventListener('click', (event) => {
+    const target = event.target.closest('[data-action]');
+    if(!target) return;
+    const id = target.getAttribute('data-id');
+    const action = target.getAttribute('data-action');
+    if(!id || !action) return;
+
+    if(action === 'tag'){
+      const current = funscriptState.get(id);
+      const suggested = current?.tags?.[0] ? `Add tag for ${current.name || 'FunScript'}` : `Add tag for ${current?.name || 'FunScript'}`;
+      const response = prompt(suggested, '');
+      if(!response) return;
+      const cleaned = response.trim().replace(/^#/, '');
+      if(!cleaned) return;
+      updateTag(id, cleaned, 'add');
+    } else if(action === 'remove-tag'){
+      const tag = target.getAttribute('data-tag');
+      if(!tag) return;
+      updateTag(id, tag, 'remove');
+    } else if(action === 'favorite'){
+      const currentFav = target.getAttribute('data-favorite') === 'true';
+      updateFavorite(id, !currentFav);
+    } else if(action === 'reanalyze'){
+      requestReanalysis(id);
+    }
+  });
+
+  function startFunscriptPolling(){
+    if(funscriptPollTimer) clearInterval(funscriptPollTimer);
+    funscriptPollTimer = setInterval(() => fetchFunscripts(false), 5000);
+  }
+
+  fetchFunscripts();
+  startFunscriptPolling();
 
   // PiP
   const togglePip = document.getElementById('togglePip');

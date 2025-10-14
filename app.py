@@ -14,6 +14,7 @@ from config import Config
 from settings_manager import SettingsManager
 from handy_controller import HandyController
 from memory_manager import MemoryManager
+from funscript_catalog import FunScriptCatalog
 from llm_service import LLMService
 from audio_service import AudioService
 from background_modes import AutoModeThread, auto_mode_logic, milking_mode_logic, edging_mode_logic
@@ -51,6 +52,7 @@ edging_start_time = None
 # A global instance of MemoryManager is created here.  It is used to
 # store events from the persona and recall context when building prompts.
 mem = MemoryManager()
+funscripts = FunScriptCatalog()
 
 # -------------------------------------------------------------------------
 # Feedback and A/B state persistence
@@ -288,6 +290,75 @@ def api_memory_summarise():
     user = data.get('user') or 'room'
     persona_yaml = mem.summarise(user)
     return jsonify({"ok": True, "persona_yaml": persona_yaml})
+
+
+@app.post("/api/funscripts/ingest")
+def api_funscripts_ingest():
+    """Analyse and persist metadata for an uploaded FunScript."""
+
+    data = request.get_json(silent=True) or {}
+    file_uuid = str(data.get("uuid") or data.get("file_uuid") or "").strip()
+    if not file_uuid:
+        return jsonify({"ok": False, "error": "uuid is required"}), 400
+    payload = data.get("funscript") or data.get("content") or data.get("raw")
+    if payload is None:
+        return jsonify({"ok": False, "error": "funscript payload missing"}), 400
+    result = funscripts.ingest(
+        file_uuid,
+        payload,
+        file_name=data.get("file_name") or data.get("name"),
+        source_path=data.get("path") or data.get("source_path"),
+    )
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
+
+
+@app.get("/api/funscripts/<file_uuid>")
+def api_funscripts_get(file_uuid: str):
+    """Return catalogue metadata for a given FunScript UUID."""
+
+    record = funscripts.get(file_uuid)
+    if not record:
+        return jsonify({"ok": False, "error": "not found"}), 404
+    return jsonify({"ok": True, "metadata": record})
+
+
+@app.get("/api/funscripts")
+def api_funscripts_list():
+    """List FunScript catalogue entries or filter by filename."""
+
+    name = request.args.get("name")
+    if name:
+        items = funscripts.find_by_filename(name)
+    else:
+        items = funscripts.list_all()
+    return jsonify({"ok": True, "items": items})
+
+
+@app.get("/api/funscripts/summary")
+def api_funscripts_summary():
+    """Return aggregate catalogue statistics for FunScripts."""
+
+    return jsonify({"ok": True, "summary": funscripts.aggregate_summary()})
+
+
+@app.post("/api/funscripts/describe")
+def api_funscripts_describe():
+    """Ask the LLM to produce a human-friendly description of a FunScript."""
+
+    data = request.get_json(silent=True) or {}
+    metadata = None
+    if uuid := str(data.get("uuid") or "").strip():
+        metadata = funscripts.get(uuid)
+        if metadata is None:
+            return jsonify({"ok": False, "error": "unknown uuid"}), 404
+    metadata = metadata or data.get("metadata")
+    if not isinstance(metadata, dict):
+        return jsonify({"ok": False, "error": "metadata is required"}), 400
+    style = str(data.get("style") or "succinct").strip().lower()
+    result = llm.describe_funscript(metadata, style=style)
+    status = 200 if result.get("ok") else 502
+    return jsonify(result), status
 
 
 @app.get("/api/invite")

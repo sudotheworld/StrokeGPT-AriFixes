@@ -1,6 +1,9 @@
 import json
+from typing import Any, Dict
+
 import requests
 from requests.adapters import HTTPAdapter, Retry
+
 from config import Config
 
 # Create a reusable session with retry logic for all LLM calls.
@@ -163,6 +166,74 @@ Your current mood is '{context.get('current_mood')}'. Handy is at {context.get('
         system_prompt = self._build_system_prompt(context)
         messages = [{"role": "system", "content": system_prompt}, *list(chat_history)]
         return self._talk_to_llm(messages, temperature)
+
+    def describe_funscript(self, metadata: Dict[str, Any], *, style: str = "succinct", temperature: float = 0.4) -> Dict[str, Any]:
+        """Generate a human-friendly FunScript description using the LLM."""
+
+        if not isinstance(metadata, dict):
+            return {"ok": False, "error": "metadata must be a JSON object"}
+
+        allowed_styles = {
+            "succinct": "Keep the description to two punchy sentences focusing on rhythm and mood.",
+            "detailed": "Provide three to four sentences including pacing, intensity shifts, and any notable climax cues.",
+            "playful": "Respond with a flirtatious tone while still covering tempo and climax cues in two to three sentences.",
+        }
+        style_key = style.lower() if isinstance(style, str) else "succinct"
+        guidance = allowed_styles.get(style_key, allowed_styles["succinct"])
+
+        system_prompt = (
+            "You are an expert analyst of haptic FunScript patterns. "
+            "Summarise the supplied metadata for an adult assistant so they can explain the pattern to a user. "
+            "Always reply with a compact JSON object containing the keys "
+            "'title', 'summary', 'tags', and 'tempo_notes'. "
+            "Tags should be a short list of lowercase descriptors. "
+            "Tempo notes should capture the tempo range in natural language. "
+            f"{guidance}"
+        )
+
+        user_payload = json.dumps({
+            "style": style_key,
+            "metadata": metadata,
+        }, ensure_ascii=False)
+
+        response = self._talk_to_llm([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_payload},
+        ], temperature=temperature)
+
+        if not isinstance(response, dict):
+            return {"ok": False, "error": "LLM returned an unexpected payload"}
+
+        if "title" in response and "summary" in response:
+            tags = response.get("tags")
+            if not isinstance(tags, list):
+                tags = []
+            tempo_notes = response.get("tempo_notes")
+            if not isinstance(tempo_notes, str):
+                tempo_notes = ""
+            return {
+                "ok": True,
+                "analysis": {
+                    "title": response.get("title", metadata.get("file_name") or metadata.get("uuid", "FunScript")),
+                    "summary": response.get("summary", ""),
+                    "tags": tags,
+                    "tempo_notes": tempo_notes,
+                },
+            }
+
+        if chat_text := response.get("chat"):
+            fallback_title = metadata.get("file_name") or metadata.get("uuid", "FunScript")
+            return {
+                "ok": True,
+                "analysis": {
+                    "title": fallback_title,
+                    "summary": chat_text,
+                    "tags": [],
+                    "tempo_notes": "",
+                },
+            }
+
+        return {"ok": False, "error": "LLM response missing required keys"}
 
     def name_this_move(self, speed, depth, mood):
         prompt = f"""

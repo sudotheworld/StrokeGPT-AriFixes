@@ -542,45 +542,178 @@
     setTimeout(()=>{ t.remove(); }, 1400);
   }
 
-  // Collapser
+  // Collapser & personas
   const agentsToggle = document.getElementById('agentsToggle');
   const agentsList = document.getElementById('agentsList');
+  let personasCache = [];
+  let activePersonaId = null;
   agentsToggle?.addEventListener('click', ()=>{
     const open = agentsToggle.getAttribute('data-open') === 'true';
     agentsToggle.setAttribute('data-open', (!open).toString());
     agentsList.setAttribute('data-open', (!open).toString());
   });
 
-  // Create persona
   const addPersona = document.getElementById('addPersona');
   const clearPersona = document.getElementById('clearPersona');
-  addPersona?.addEventListener('click', ()=>{
-    const name  = document.getElementById('personaName').value.trim() || 'Unnamed';
-    const role  = document.getElementById('personaRole').value.trim();
-    const body  = document.getElementById('personaBody').value;
-    const desc  = document.getElementById('personaDesc').value.trim();
-    const goal  = document.getElementById('personaGoal').value.trim();
 
-    const wrap = document.createElement('div');
-    wrap.className = 'agent';
-    const left = document.createElement('div');
-    left.innerHTML = '<b>'+name+'</b><div class="small">'+(role ? role+' • ' : '')+body.replace('-', ' ')+'</div>';
-    const right = document.createElement('div');
-    const use = document.createElement('button');
-    use.className = 'action primary'; use.textContent = 'Use';
-    right.appendChild(use);
-    wrap.appendChild(left); wrap.appendChild(right);
+  function resetPersonaForm(){
+    ['personaName','personaRole','personaDesc','personaGoal'].forEach(id=>{
+      const field = document.getElementById(id);
+      if(field){ field.value = ''; }
+    });
+    const bodySelect = document.getElementById('personaBody');
+    if(bodySelect){ bodySelect.selectedIndex = 0; }
+  }
 
-    // Replace placeholder message if present
-    const placeholder = agentsList.querySelector('.small');
-    if(placeholder && agentsList.children.length === 1){ placeholder.remove(); }
-    agentsList.appendChild(wrap);
-    toast('Agent “'+name+'” added');
+  function renderPersonas(){
+    agentsList.innerHTML = '';
+    if(!personasCache.length){
+      const placeholder = document.createElement('div');
+      placeholder.className = 'small';
+      placeholder.textContent = 'No agents yet — create one above.';
+      agentsList.appendChild(placeholder);
+      return;
+    }
+    personasCache.forEach(persona => {
+      const wrap = document.createElement('div');
+      wrap.className = 'agent';
+      if(persona.is_active || persona.id === activePersonaId){
+        wrap.setAttribute('data-active', 'true');
+      }
+
+      const left = document.createElement('div');
+      const title = document.createElement('b');
+      title.textContent = persona.name || 'Unnamed';
+      left.appendChild(title);
+
+      const subtitleParts = [];
+      if(persona.role){ subtitleParts.push(persona.role); }
+      if(persona.body_type){ subtitleParts.push(persona.body_type.replace(/-/g, ' ')); }
+      if(subtitleParts.length){
+        const meta = document.createElement('div');
+        meta.className = 'small';
+        meta.textContent = subtitleParts.join(' • ');
+        left.appendChild(meta);
+      }
+      if(persona.description){
+        const desc = document.createElement('div');
+        desc.className = 'small';
+        desc.textContent = persona.description;
+        left.appendChild(desc);
+      }
+
+      const right = document.createElement('div');
+      const use = document.createElement('button');
+      const isActive = persona.is_active || persona.id === activePersonaId;
+      use.className = 'action primary';
+      use.textContent = isActive ? 'Active' : 'Use';
+      use.disabled = !!isActive;
+      use.addEventListener('click', async () => {
+        use.disabled = true;
+        await activatePersona(persona.id, persona.name);
+      });
+      right.appendChild(use);
+
+      const del = document.createElement('button');
+      del.className = 'action ghost';
+      del.textContent = 'Delete';
+      del.addEventListener('click', async () => {
+        if(window.confirm('Delete persona "' + (persona.name || 'Unnamed') + '"?')){
+          del.disabled = true;
+          await removePersona(persona.id, persona.name);
+        }
+      });
+      right.appendChild(del);
+
+      wrap.appendChild(left);
+      wrap.appendChild(right);
+      agentsList.appendChild(wrap);
+    });
+  }
+
+  async function fetchPersonas(){
+    try{
+      const res = await fetch('/api/personas');
+      if(!res.ok) throw new Error('bad status');
+      const data = await res.json();
+      personasCache = Array.isArray(data.personas) ? data.personas : [];
+      activePersonaId = data.active_persona_id || null;
+      renderPersonas();
+    }catch(err){
+      console.error('Failed to load personas', err);
+      agentsList.innerHTML = '';
+      const placeholder = document.createElement('div');
+      placeholder.className = 'small';
+      placeholder.textContent = 'Could not load personas.';
+      agentsList.appendChild(placeholder);
+      toast('Could not load personas');
+    }
+  }
+
+  async function createPersonaOnServer(payload){
+    try{
+      const res = await fetch('/api/personas', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if(!res.ok) throw new Error('bad status');
+      const data = await res.json();
+      toast('Agent “' + (data.persona?.name || payload.name || 'Unnamed') + '” added');
+      resetPersonaForm();
+      await fetchPersonas();
+    }catch(err){
+      console.error('Failed to create persona', err);
+      toast('Failed to create persona');
+    }
+  }
+
+  async function activatePersona(id, name){
+    try{
+      const res = await fetch('/api/personas/' + encodeURIComponent(id) + '/activate', { method: 'POST' });
+      if(!res.ok) throw new Error('bad status');
+      const data = await res.json();
+      activePersonaId = data.active_persona_id || null;
+      toast('Using persona “' + (data.persona?.name || name || 'Unnamed') + '”.');
+      await fetchPersonas();
+    }catch(err){
+      console.error('Failed to activate persona', err);
+      toast('Failed to activate persona');
+      await fetchPersonas();
+    }
+  }
+
+  async function removePersona(id, name){
+    try{
+      const res = await fetch('/api/personas/' + encodeURIComponent(id), { method: 'DELETE' });
+      if(!res.ok) throw new Error('bad status');
+      toast('Deleted persona “' + (name || 'Unnamed') + '”.');
+      await fetchPersonas();
+    }catch(err){
+      console.error('Failed to delete persona', err);
+      toast('Failed to delete persona');
+      await fetchPersonas();
+    }
+  }
+
+  addPersona?.addEventListener('click', async (ev)=>{
+    ev.preventDefault();
+    const payload = {
+      name: document.getElementById('personaName').value.trim(),
+      role: document.getElementById('personaRole').value.trim(),
+      body_type: document.getElementById('personaBody').value,
+      description: document.getElementById('personaDesc').value.trim(),
+      goal: document.getElementById('personaGoal').value.trim()
+    };
+    await createPersonaOnServer(payload);
   });
-  clearPersona?.addEventListener('click', ()=>{
-    ['personaName','personaRole','personaDesc','personaGoal'].forEach(id=>document.getElementById(id).value='');
-    document.getElementById('personaBody').selectedIndex = 0;
+
+  clearPersona?.addEventListener('click', (ev)=>{
+    ev.preventDefault();
+    resetPersonaForm();
   });
+
+  fetchPersonas();
 
   // Battle switch
   const battleSwitch = document.getElementById('battleSwitch');

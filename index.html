@@ -221,6 +221,13 @@
         const edgingModeBtn = D.getElementById('edging-mode-btn');
         const edgingTimer = D.getElementById('edging-timer');
         const easterEggOverlay = D.getElementById('easter-egg-overlay');
+        const autoMinInput = D.getElementById('auto-min-time');
+        const autoMaxInput = D.getElementById('auto-max-time');
+        const edgingMinInput = D.getElementById('edging-min-time');
+        const edgingMaxInput = D.getElementById('edging-max-time');
+        const milkingMinInput = D.getElementById('milking-min-time');
+        const milkingMaxInput = D.getElementById('milking-max-time');
+        const saveTimingsBtn = D.getElementById('save-timings-btn');
         const ctx = rhythmCanvas.getContext('2d');
         let myHandyKey = '', myPersonaDescription = '', aiName = 'BOT', edgingTimerInterval = null;
         
@@ -378,6 +385,15 @@
                     elevenLabsKeyInput.value = data.elevenlabs_key;
                     setElevenLabsKeyButton.click();
                 }
+                if (data.timings) {
+                    const { auto_min, auto_max, milking_min, milking_max, edging_min, edging_max } = data.timings;
+                    if (auto_min != null) autoMinInput.value = auto_min;
+                    if (auto_max != null) autoMaxInput.value = auto_max;
+                    if (milking_min != null) milkingMinInput.value = milking_min;
+                    if (milking_max != null) milkingMaxInput.value = milking_max;
+                    if (edging_min != null) edgingMinInput.value = edging_min;
+                    if (edging_max != null) edgingMaxInput.value = edging_max;
+                }
                 if (localStorage.getItem('sidebar_collapsed') === 'true') {
                     D.body.classList.add('sidebar-collapsed');
                 }
@@ -450,6 +466,62 @@
             if (data && data.status === 'boosted') {
                 statusText.textContent = `Saved '${data.name}' to my memory!`;
             } else { statusText.textContent = "Status: No active move to like."; }
+        });
+        saveTimingsBtn.addEventListener('click', async () => {
+            const payload = {
+                auto_min: parseFloat(autoMinInput.value),
+                auto_max: parseFloat(autoMaxInput.value),
+                milking_min: parseFloat(milkingMinInput.value),
+                milking_max: parseFloat(milkingMaxInput.value),
+                edging_min: parseFloat(edgingMinInput.value),
+                edging_max: parseFloat(edgingMaxInput.value),
+            };
+
+            const keys = [
+                ['auto_min', 'auto_max', autoMinInput, autoMaxInput],
+                ['milking_min', 'milking_max', milkingMinInput, milkingMaxInput],
+                ['edging_min', 'edging_max', edgingMinInput, edgingMaxInput],
+            ];
+
+            for (const [minKey, maxKey, minInput, maxInput] of keys) {
+                const minVal = payload[minKey];
+                const maxVal = payload[maxKey];
+                if (!Number.isFinite(minVal) || !Number.isFinite(maxVal) || minVal <= 0 || maxVal <= 0) {
+                    statusText.textContent = 'Error: Timings must be positive numbers.';
+                    minInput.focus();
+                    return;
+                }
+                if (minVal > maxVal) {
+                    statusText.textContent = 'Error: Minimum timing cannot exceed maximum timing.';
+                    minInput.focus();
+                    return;
+                }
+            }
+
+            try {
+                const response = await fetch('/api/mode_timings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const result = await response.json();
+                if (!response.ok) {
+                    statusText.textContent = result && result.message ? `Error: ${result.message}` : 'Error: Failed to save timings.';
+                    return;
+                }
+                if (result.timings) {
+                    autoMinInput.value = result.timings.auto_min;
+                    autoMaxInput.value = result.timings.auto_max;
+                    milkingMinInput.value = result.timings.milking_min;
+                    milkingMaxInput.value = result.timings.milking_max;
+                    edgingMinInput.value = result.timings.edging_min;
+                    edgingMaxInput.value = result.timings.edging_max;
+                }
+                statusText.textContent = 'Mode timings updated!';
+            } catch (error) {
+                console.error('Failed to save mode timings', error);
+                statusText.textContent = 'Error: Failed to save timings.';
+            }
         });
         const stopButtons = [D.getElementById('stop-auto-btn'), D.getElementById('emergency-stop-all-btn')];
         stopButtons.forEach(btn => btn.addEventListener('click', () => {

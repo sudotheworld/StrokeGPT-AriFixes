@@ -483,6 +483,45 @@ def set_speed_limits_route():
     settings.save()
     return jsonify({"status": "success"})
 
+
+@app.post('/api/mode_timings')
+def set_mode_timings_route():
+    data = request.get_json(silent=True) or {}
+    timing_fields = {
+        "auto": ("auto_min", "auto_max", "auto_min_time", "auto_max_time"),
+        "milking": ("milking_min", "milking_max", "milking_min_time", "milking_max_time"),
+        "edging": ("edging_min", "edging_max", "edging_min_time", "edging_max_time"),
+    }
+
+    for _, (min_key, max_key, attr_min, attr_max) in timing_fields.items():
+        try:
+            min_val = float(data[min_key])
+            max_val = float(data[max_key])
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"status": "error", "message": f"Invalid or missing values for {min_key}/{max_key}."}), 400
+
+        if min_val <= 0 or max_val <= 0:
+            return jsonify({"status": "error", "message": "Timings must be positive numbers."}), 400
+        if min_val > max_val:
+            return jsonify({"status": "error", "message": f"{min_key.replace('_', ' ').title()} cannot exceed {max_key.replace('_', ' ').title()}."}), 400
+
+        setattr(settings, attr_min, min_val)
+        setattr(settings, attr_max, max_val)
+
+    settings.save()
+
+    return jsonify({
+        "status": "success",
+        "timings": {
+            "auto_min": settings.auto_min_time,
+            "auto_max": settings.auto_max_time,
+            "milking_min": settings.milking_min_time,
+            "milking_max": settings.milking_max_time,
+            "edging_min": settings.edging_min_time,
+            "edging_max": settings.edging_max_time,
+        },
+    })
+
 @app.route('/like_last_move', methods=['POST'])
 def like_last_move_route():
     last_speed = handy.last_relative_speed; last_depth = handy.last_depth_pos

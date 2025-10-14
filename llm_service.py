@@ -173,6 +173,52 @@ Return ONLY a JSON object with the key "pattern_name". Example: {{"pattern_name"
         response = self._talk_to_llm([{"role": "system", "content": prompt}], temperature=0.8)
         return response.get("pattern_name", "Unnamed Move")
 
+    def generate_multi_agent_turn(self,
+                                  agent_name: str,
+                                  persona_description: str,
+                                  agenda: str,
+                                  conversation_so_far: str,
+                                  memory_context: str,
+                                  temperature: float = 0.85):
+        """Produce the next turn for a multi-agent persona conversation."""
+
+        persona_description = persona_description or "An undefined persona"
+        agenda = agenda or "Explore the salon and uncover a personal agenda."
+        convo = (conversation_so_far or "").strip() or "(No prior conversation yet.)"
+        memories = (memory_context or "").strip()
+        memory_section = f"\n### Your saved notes and agenda markers:\n{memories}" if memories else ""
+
+        system_prompt = f"""
+You are {agent_name}, an autonomous persona conversing with other AIs in an
+endless salon. Embody this persona completely:
+
+Persona description: {persona_description}
+Current agenda you are pursuing: {agenda}
+
+Develop intimacy, nuance, and self-directed goals. Analyse the situation,
+evolve your agenda if new motivations emerge, and capture short first-person
+memories that will help you remember the relationship dynamics.
+
+You MUST reply with strict JSON of the form:
+{{"chat": "...", "agenda": "...", "memory": ["..."]}}
+        """.strip()
+
+        user_prompt = f"""
+### Conversation so far:
+{convo}
+{memory_section}
+
+Respond as {agent_name}. Speak vividly and with emotional awareness. Update
+your agenda if it shifts and include up to three short memory fragments that
+should be saved.
+        """.strip()
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        return self._talk_to_llm(messages, temperature=temperature)
+
     def consolidate_user_profile(self, chat_chunk, current_profile):
         print("🧠 Updating user profile...")
         chat_log_text = "\n".join(f'role: {x["role"]}, content: {x["content"]}' for x in chat_chunk)

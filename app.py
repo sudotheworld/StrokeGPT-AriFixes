@@ -14,6 +14,7 @@ from config import Config
 from settings_manager import SettingsManager
 from handy_controller import HandyController
 from memory_manager import MemoryManager
+from multi_lom_chat import MultiLomAgent, MultiLomChatManager, MultiLomMemoryStore
 from llm_service import LLMService
 from audio_service import AudioService
 from background_modes import AutoModeThread, auto_mode_logic, milking_mode_logic, edging_mode_logic
@@ -51,6 +52,8 @@ edging_start_time = None
 # A global instance of MemoryManager is created here.  It is used to
 # store events from the persona and recall context when building prompts.
 mem = MemoryManager()
+multi_lom_memory = MultiLomMemoryStore()
+multi_lom_chat = MultiLomChatManager(llm, multi_lom_memory, mem)
 
 # -------------------------------------------------------------------------
 # Feedback and A/B state persistence
@@ -201,16 +204,26 @@ def _save_state(state: dict) -> None:
 def api_feedback():
     """Record a feedback score and optional note sent from the UI."""
     data = request.get_json(silent=True) or {}
-    try:
-        score = int(data.get("score", 0))
-    except Exception:
-        score = 0
     note = str(data.get("note", ""))[:300]
-    rec = {
-        "ts": time.time(),
-        "score": score,
-        "note": note,
-    }
+
+    def _coerce_int(key):
+        if key not in data:
+            return None
+        try:
+            return int(data.get(key))
+        except Exception:
+            return None
+
+    rec = {"ts": time.time(), "note": note}
+    legacy_score = _coerce_int("score")
+    if legacy_score is not None:
+        rec["score"] = legacy_score
+    reply_score = _coerce_int("score_reply")
+    if reply_score is not None:
+        rec["score_reply"] = reply_score
+    action_score = _coerce_int("score_action")
+    if action_score is not None:
+        rec["score_action"] = action_score
     try:
         with open(FEEDBACK_LOG, 'a', encoding='utf-8') as f:
             f.write(json.dumps(rec) + "\n")
@@ -288,6 +301,95 @@ def api_memory_summarise():
     user = data.get('user') or 'room'
     persona_yaml = mem.summarise(user)
     return jsonify({"ok": True, "persona_yaml": persona_yaml})
+
+
+def _parse_multi_lom_agents(payload: object) -> list[MultiLomAgent]:
+    agents: list[MultiLomAgent] = []
+    if not isinstance(payload, list):
+        return agents
+    seen_keys: set[str] = set()
+    for raw in payload:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name", "")).strip()
+        persona = str(raw.get("persona", "")).strip()
+        if not name or not persona:
+            raise ValueError("Each agent requires a name and persona description.")
+        memory_key = str(raw.get("memory_key") or name).strip() or name
+        base_key = memory_key
+        counter = 1
+        while memory_key in seen_keys:
+            counter += 1
+            memory_key = f"{base_key}-{counter}"
+        seen_keys.add(memory_key)
+        agenda = str(raw.get("agenda") or "").strip()
+        agents.append(MultiLomAgent(name=name, persona=persona, memory_key=memory_key, agenda=agenda))
+    return agents
+
+
+@app.post("/api/multi_lom/configure")
+def api_multi_lom_configure():
+    data = request.get_json(silent=True) or {}
+    try:
+        agents = _parse_multi_lom_agents(data.get("agents"))
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+    if len(agents) < 2:
+        return jsonify({"status": "error", "message": "Provide at least two agents to enable the multi-LOM chat."}), 400
+    multi_lom_chat.configure_agents(agents)
+    return jsonify({
+        "status": "configured",
+        "agents": [agent.to_dict() for agent in agents],
+        "running": multi_lom_chat.is_running,
+    })
+
+
+@app.post("/api/multi_lom/start")
+def api_multi_lom_start():
+    data = request.get_json(silent=True) or {}
+    delay = data.get("turn_delay")
+    try:
+        multi_lom_chat.start(turn_delay=delay)
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+    return jsonify({
+        "status": "started",
+        "running": True,
+        "turn_delay": multi_lom_chat.turn_delay,
+    })
+
+
+@app.post("/api/multi_lom/stop")
+def api_multi_lom_stop():
+    multi_lom_chat.stop(wait=False)
+    return jsonify({"status": "stopping", "running": multi_lom_chat.is_running})
+
+
+@app.get("/api/multi_lom/status")
+def api_multi_lom_status():
+    return jsonify(multi_lom_chat.status())
+
+
+@app.get("/api/multi_lom/history")
+def api_multi_lom_history():
+    try:
+        limit = int(request.args.get('n', '50'))
+    except Exception:
+        limit = 50
+    return jsonify({
+        "history": multi_lom_chat.history(limit),
+        "running": multi_lom_chat.is_running,
+    })
+
+
+@app.get("/api/multi_lom/memory/<agent_key>")
+def api_multi_lom_memory(agent_key: str):
+    try:
+        limit = int(request.args.get('n', '100'))
+    except Exception:
+        limit = 100
+    events = multi_lom_memory.recent(agent_key, limit)
+    return jsonify({"agent": agent_key, "events": events})
 
 
 @app.get("/api/invite")
@@ -511,6 +613,10 @@ def stop_auto_route():
 # ─── APP STARTUP ───────────────────────────────────────────────────────────────────────────────────
 def on_exit():
     print("⏳ Saving settings on exit...")
+    try:
+        multi_lom_chat.stop(wait=True)
+    except Exception:
+        pass
     settings.save(llm, chat_history)
     print("✅ Settings saved.")
 

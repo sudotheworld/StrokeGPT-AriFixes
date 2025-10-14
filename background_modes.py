@@ -15,7 +15,7 @@ class AutoModeThread(threading.Thread):
 
     def run(self):
         message_callback = self._callbacks.get('send_message')
-        handy_controller = self._services.get('handy')
+        device_controller = self._services.get('device')
         
         if message_callback:
             message_callback(self._initial_message)
@@ -26,8 +26,8 @@ class AutoModeThread(threading.Thread):
         except Exception as e:
             print(f"Auto mode crashed: {e}")
         finally:
-            if handy_controller:
-                handy_controller.stop()
+            if device_controller:
+                device_controller.stop()
             
             stop_callback = self._callbacks.get('on_stop')
             if stop_callback:
@@ -46,7 +46,7 @@ def _check_for_user_message(queue):
     return None
 
 def auto_mode_logic(stop_event, services, callbacks):
-    llm_service, handy_controller = services['llm'], services['handy']
+    llm_service, device_controller = services['llm'], services['device']
     get_context, send_message, get_timings, message_queue = callbacks['get_context'], callbacks['send_message'], callbacks['get_timings'], callbacks['message_queue']
     
     while not stop_event.is_set():
@@ -66,11 +66,11 @@ def auto_mode_logic(stop_event, services, callbacks):
         
         if chat_text := response.get("chat"): send_message(chat_text)
         if move_data := response.get("move"):
-            handy_controller.move(move_data.get("sp"), move_data.get("dp"), move_data.get("rng"))
+            device_controller.move(move_data.get("sp"), move_data.get("dp"), move_data.get("rng"))
         time.sleep(random.uniform(auto_min, auto_max))
 
 def milking_mode_logic(stop_event, services, callbacks):
-    llm_service, handy_controller = services['llm'], services['handy']
+    llm_service, device_controller = services['llm'], services['device']
     get_context, send_message, get_timings, message_queue = callbacks['get_context'], callbacks['send_message'], callbacks['get_timings'], callbacks['message_queue']
 
     for _ in range(random.randint(6, 9)):
@@ -91,7 +91,7 @@ def milking_mode_logic(stop_event, services, callbacks):
         
         if response.get("chat"): send_message(response.get("chat"))
         if move_data := response.get("move"):
-            handy_controller.move(move_data.get("sp"), move_data.get("dp"), move_data.get("rng"))
+            device_controller.move(move_data.get("sp"), move_data.get("dp"), move_data.get("rng"))
         time.sleep(random.uniform(milking_min, milking_max))
     
     if not stop_event.is_set():
@@ -99,7 +99,7 @@ def milking_mode_logic(stop_event, services, callbacks):
         time.sleep(4)
 
 def edging_mode_logic(stop_event, services, callbacks):
-    llm_service, handy_controller = services['llm'], services['handy']
+    llm_service, device_controller = services['llm'], services['device']
     get_context, send_message, get_timings, update_mood = callbacks['get_context'], callbacks['send_message'], callbacks['get_timings'], callbacks['update_mood']
     user_signal_event = callbacks['user_signal_event']
     message_queue = callbacks['message_queue']
@@ -144,7 +144,7 @@ def edging_mode_logic(stop_event, services, callbacks):
         
         if chat_text := response.get("chat"): send_message(chat_text)
         if move_data := response.get("move"):
-            handy_controller.move(move_data.get("sp"), move_data.get("dp"), move_data.get("rng"))
+            device_controller.move(move_data.get("sp"), move_data.get("dp"), move_data.get("rng"))
 
         if current_state != "PULL_BACK":
             current_state = random.choice(states)

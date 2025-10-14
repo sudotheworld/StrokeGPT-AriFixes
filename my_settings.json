@@ -1,5 +1,6 @@
 {
   "handy_key": "J1j64GQb",
+  "device_type": "handy",
   "ai_name": "BOT",
   "persona_desc": "An energetic and passionate girlfriend",
   "profile_picture_b64": "",
@@ -23,5 +24,9 @@
   "milking_min_time": 2.5,
   "milking_max_time": 4.5,
   "edging_min_time": 5.0,
-  "edging_max_time": 8.0
+  "edging_max_time": 8.0,
+  "lovense_domain": "127.0.0.1",
+  "lovense_port": 20010,
+  "lovense_token": "",
+  "lovense_secure": false
 }

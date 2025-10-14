@@ -132,6 +132,12 @@
   }
   input:focus, textarea:focus, select:focus{ box-shadow: var(--ring); border-color: var(--brand1); }
 
+  .status-msg{ font-size:11px; color: var(--muted); min-height: 14px; transition: color .2s; }
+  .status-msg.status-success{ color: var(--ok); }
+  .status-msg.status-error{ color: var(--bad); }
+  input.input-success, select.input-success{ border-color: var(--ok); box-shadow: 0 0 0 1px rgba(32,191,85,.35); }
+  input.input-error, select.input-error{ border-color: var(--bad); box-shadow: 0 0 0 1px rgba(255,77,126,.35); }
+
   .row{ display:flex; gap:10px; }
   .row > *{ flex:1; }
 
@@ -331,15 +337,34 @@
         <h3>APIs &amp; Tools</h3>
         <div class="field">
           <label for="handyKey">Handy API Key</label>
-          <input id="handyKey" type="password" placeholder="••••••••••" />
+          <div class="row">
+            <input id="handyKey" type="password" placeholder="••••••••••" />
+            <button id="handySave" class="action primary" type="button" style="flex:0 0 auto;">Save</button>
+          </div>
+          <div class="small status-msg" id="handyStatus"></div>
         </div>
         <div class="field">
           <label for="elevenKey">ElevenLabs API Key</label>
-          <input id="elevenKey" type="password" placeholder="••••••••••" />
+          <div class="row">
+            <input id="elevenKey" type="password" placeholder="••••••••••" />
+            <button id="elevenSave" class="action primary" type="button" style="flex:0 0 auto;">Connect</button>
+          </div>
+          <div class="small status-msg" id="elevenStatus"></div>
+        </div>
+        <div class="field" id="elevenVoiceField" style="display:none;">
+          <label for="elevenVoice">ElevenLabs Voice</label>
+          <select id="elevenVoice">
+            <option value="">Audio Off</option>
+          </select>
+          <div class="small status-msg" id="elevenVoiceStatus"></div>
         </div>
         <div class="field">
           <label for="imageKey">Image Generator API Key</label>
-          <input id="imageKey" type="password" placeholder="••••••••••" />
+          <div class="row">
+            <input id="imageKey" type="password" placeholder="••••••••••" />
+            <button id="imageSave" class="action primary" type="button" style="flex:0 0 auto;">Save</button>
+          </div>
+          <div class="small status-msg" id="imageStatus"></div>
         </div>
 
         <div class="divider"></div>
@@ -541,6 +566,181 @@
     document.body.appendChild(t);
     setTimeout(()=>{ t.remove(); }, 1400);
   }
+
+  async function postJSON(url, payload){
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    let data = {};
+    try {
+      data = await res.json();
+    } catch {
+      if (!res.ok) throw new Error(res.statusText || 'Request failed');
+    }
+    if (!res.ok){
+      const message = data?.message || `${res.status} ${res.statusText}`;
+      throw new Error(message.trim());
+    }
+    if (data?.status && !['success', 'ok'].includes(String(data.status).toLowerCase())){
+      throw new Error(data?.message || 'Request failed');
+    }
+    return data;
+  }
+
+  function clearFieldFeedback(field, statusEl){
+    if (field){ field.classList.remove('input-success', 'input-error'); }
+    if (statusEl){
+      statusEl.textContent = '';
+      statusEl.classList.remove('status-success', 'status-error');
+    }
+  }
+
+  function setFieldFeedback(field, statusEl, success, message){
+    clearFieldFeedback(field, statusEl);
+    if (message && statusEl){
+      statusEl.textContent = message;
+      statusEl.classList.add(success ? 'status-success' : 'status-error');
+    }
+    if (message && field){
+      field.classList.add(success ? 'input-success' : 'input-error');
+    }
+  }
+
+  function attachKeySubmit(options){
+    const {
+      input,
+      button,
+      statusEl,
+      url,
+      buildPayload = (value) => ({ key: value }),
+      successMessage = 'Saved.',
+      busyLabel = 'Saving…',
+      onSuccess
+    } = options;
+
+    if (!input || !button) return;
+    if (!button.dataset.originalLabel){ button.dataset.originalLabel = button.textContent; }
+
+    const submit = async () => {
+      const value = input.value.trim();
+      if (!value){
+        setFieldFeedback(input, statusEl, false, 'Enter a key first.');
+        input.focus();
+        return;
+      }
+
+      clearFieldFeedback(input, statusEl);
+      button.disabled = true;
+      button.textContent = busyLabel;
+
+      try {
+        const data = await postJSON(url, buildPayload(value));
+        const message = onSuccess ? (onSuccess(data, value) || successMessage) : successMessage;
+        setFieldFeedback(input, statusEl, true, message);
+        toast(message);
+      } catch (err){
+        const message = err?.message || 'Request failed';
+        setFieldFeedback(input, statusEl, false, message);
+        toast('Error: ' + message);
+      } finally {
+        button.disabled = false;
+        button.textContent = button.dataset.originalLabel;
+      }
+    };
+
+    button.addEventListener('click', submit);
+    input.addEventListener('keydown', (evt) => {
+      if (evt.key === 'Enter'){
+        evt.preventDefault();
+        submit();
+      }
+    });
+    input.addEventListener('input', () => clearFieldFeedback(input, statusEl));
+  }
+
+  const handyInput = document.getElementById('handyKey');
+  const handyButton = document.getElementById('handySave');
+  const handyStatus = document.getElementById('handyStatus');
+  attachKeySubmit({
+    input: handyInput,
+    button: handyButton,
+    statusEl: handyStatus,
+    url: '/set_handy_key',
+    successMessage: 'Handy key saved.'
+  });
+
+  const elevenInput = document.getElementById('elevenKey');
+  const elevenButton = document.getElementById('elevenSave');
+  const elevenStatus = document.getElementById('elevenStatus');
+  const elevenVoiceField = document.getElementById('elevenVoiceField');
+  const elevenVoiceSelect = document.getElementById('elevenVoice');
+  const elevenVoiceStatus = document.getElementById('elevenVoiceStatus');
+
+  function populateVoices(voices){
+    if (!elevenVoiceSelect) return;
+    elevenVoiceSelect.innerHTML = '';
+    const offOption = document.createElement('option');
+    offOption.value = '';
+    offOption.textContent = 'Audio Off';
+    elevenVoiceSelect.appendChild(offOption);
+    Object.entries(voices || {}).forEach(([name, id]) => {
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = name;
+      elevenVoiceSelect.appendChild(opt);
+    });
+  }
+
+  attachKeySubmit({
+    input: elevenInput,
+    button: elevenButton,
+    statusEl: elevenStatus,
+    url: '/setup_elevenlabs',
+    busyLabel: 'Connecting…',
+    buildPayload: (value) => ({ api_key: value }),
+    successMessage: 'ElevenLabs connected.',
+    onSuccess: (data) => {
+      if (elevenVoiceField){ elevenVoiceField.style.display = 'flex'; }
+      const voices = data?.voices || {};
+      populateVoices(voices);
+      const count = Object.keys(voices).length;
+      const summary = `Connected • ${count} voice${count === 1 ? '' : 's'} loaded.`;
+      const followup = count ? 'Select a voice to enable audio.' : 'Connected, but no voices returned.';
+      setFieldFeedback(null, elevenVoiceStatus, true, followup);
+      return summary;
+    }
+  });
+
+  elevenVoiceSelect?.addEventListener('change', async () => {
+    const voiceId = elevenVoiceSelect.value;
+    clearFieldFeedback(elevenVoiceSelect, elevenVoiceStatus);
+    elevenVoiceSelect.disabled = true;
+    try {
+      const data = await postJSON('/set_elevenlabs_voice', { voice_id: voiceId, enabled: Boolean(voiceId) });
+      const message = data?.message || (voiceId ? 'Voice enabled.' : 'Voice disabled.');
+      setFieldFeedback(elevenVoiceSelect, elevenVoiceStatus, true, message);
+      toast(message);
+    } catch (err){
+      const message = err?.message || 'Failed to update voice.';
+      setFieldFeedback(elevenVoiceSelect, elevenVoiceStatus, false, message);
+      toast('Error: ' + message);
+    } finally {
+      elevenVoiceSelect.disabled = false;
+    }
+  });
+
+  const imageInput = document.getElementById('imageKey');
+  const imageButton = document.getElementById('imageSave');
+  const imageStatus = document.getElementById('imageStatus');
+  attachKeySubmit({
+    input: imageInput,
+    button: imageButton,
+    statusEl: imageStatus,
+    url: '/set_image_key',
+    successMessage: 'Image key saved.'
+  });
 
   // Collapser
   const agentsToggle = document.getElementById('agentsToggle');

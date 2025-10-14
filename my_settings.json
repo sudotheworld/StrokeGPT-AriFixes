@@ -3,6 +3,7 @@
   "ai_name": "BOT",
   "persona_desc": "An energetic and passionate girlfriend",
   "profile_picture_b64": "",
+  "image_api_key": "",
   "elevenlabs_api_key": "",
   "elevenlabs_voice_id": "",
   "patterns": [],

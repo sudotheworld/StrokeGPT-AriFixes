@@ -4,11 +4,13 @@ import io
 import re
 import json
 import atexit
+import base64
 import threading
 import time
 from collections import deque
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template_string, send_file, send_from_directory
+import requests
 from config import Config
 
 from settings_manager import SettingsManager
@@ -23,6 +25,8 @@ app = Flask(__name__)
 # Removed static LLM_URL; defaults are provided via Config.
 settings = SettingsManager(settings_file_path="my_settings.json")
 settings.load()
+if not settings.image_api_key and Config.IMAGE_API_KEY:
+    settings.image_api_key = Config.IMAGE_API_KEY
 
 handy = HandyController(settings.handy_key)
 handy.update_settings(settings.min_speed, settings.max_speed, settings.min_depth, settings.max_depth)
@@ -114,6 +118,13 @@ def add_message_to_queue(text, add_to_history=True):
         clean_text = re.sub(r'<[^>]+>', '', text).strip()
         if clean_text: chat_history.append({"role": "assistant", "content": clean_text})
     threading.Thread(target=audio.generate_audio_for_text, args=(text,)).start()
+
+
+def _store_profile_picture(data_url: str) -> str:
+    """Persist the provided profile picture data URL and return it."""
+    settings.profile_picture_b64 = data_url
+    settings.save()
+    return data_url
 
 def start_background_mode(mode_logic, initial_message, mode_name):
     global auto_mode_active_task, edging_start_time
@@ -397,6 +408,127 @@ def check_settings_route():
         })
     return jsonify({"configured": False})
 
+
+@app.route('/generate_portrait', methods=['POST'])
+def generate_portrait_route():
+    api_url = Config.IMAGE_API_URL
+    api_key = settings.image_api_key or Config.IMAGE_API_KEY
+    if not api_url:
+        return jsonify({"status": "error", "message": "Image API URL is not configured."}), 400
+    if not api_key:
+        return jsonify({"status": "error", "message": "Image API key is not configured."}), 400
+
+    request_data = request.get_json(silent=True) or {}
+
+    persona_desc = (request_data.get('persona_desc') or settings.persona_desc or '').strip()
+    ai_name = (request_data.get('ai_name') or settings.ai_name or 'AI companion').strip()
+    persona_role = (request_data.get('persona_role') or '').strip()
+    body_type = (request_data.get('body_type') or '').strip()
+    persona_goal = (request_data.get('persona_goal') or '').strip()
+    visual_style = (request_data.get('visual_style') or request_data.get('style') or '').strip()
+    additional_prompt = (request_data.get('additional_prompt') or '').strip()
+
+    likes = request_data.get('likes')
+    if not likes and isinstance(settings.user_profile, dict):
+        likes = settings.user_profile.get('likes')
+    if isinstance(likes, list):
+        likes_text = ', '.join(str(item) for item in likes if item)
+    else:
+        likes_text = str(likes).strip() if likes else ''
+
+    prompt_segments = []
+    if ai_name:
+        prompt_segments.append(f"Portrait of {ai_name}")
+    if persona_role:
+        prompt_segments.append(persona_role)
+    if persona_desc:
+        prompt_segments.append(persona_desc)
+    if body_type:
+        prompt_segments.append(f"Body type: {body_type}")
+    if persona_goal:
+        prompt_segments.append(f"Goal: {persona_goal}")
+    if likes_text:
+        prompt_segments.append(f"Enjoys {likes_text}")
+    if visual_style:
+        prompt_segments.append(visual_style)
+    if additional_prompt:
+        prompt_segments.append(additional_prompt)
+
+    prompt = '. '.join(segment.strip().rstrip('.') for segment in prompt_segments if segment).strip()
+    if not prompt:
+        prompt = "Portrait of a friendly AI companion"
+
+    payload = request_data.get('payload')
+    if not isinstance(payload, dict):
+        payload = {}
+    payload = {**payload}
+    payload.setdefault('prompt', prompt)
+    if Config.IMAGE_API_MODEL and 'model' not in payload:
+        payload['model'] = Config.IMAGE_API_MODEL
+
+    auth_header = Config.IMAGE_API_AUTH_HEADER or 'Authorization'
+    key_prefix = Config.IMAGE_API_KEY_PREFIX or ''
+    header_value = api_key
+    if key_prefix and not api_key.startswith(key_prefix.strip()) and not api_key.lower().startswith(key_prefix.lower()):
+        header_value = f"{key_prefix}{api_key}"
+
+    headers = {auth_header: header_value}
+    headers.setdefault('Content-Type', 'application/json')
+
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=Config.READ_TIMEOUT)
+    except requests.RequestException as exc:
+        return jsonify({"status": "error", "message": f"Image API request failed: {exc}"}), 502
+
+    if response.status_code >= 400:
+        try:
+            error_body = response.json()
+        except ValueError:
+            error_body = response.text
+        return jsonify({"status": "error", "message": "Image API returned an error.", "details": error_body}), response.status_code
+
+    try:
+        result_json = response.json()
+    except ValueError:
+        return jsonify({"status": "error", "message": "Image API response was not valid JSON."}), 502
+
+    data_url = result_json.get('data_url')
+    image_b64 = result_json.get('image_b64') or result_json.get('image_base64')
+    image_url = result_json.get('image_url') or result_json.get('url')
+    mime_type = result_json.get('mime_type') or 'image/png'
+
+    def _extract_from_entry(entry):
+        nonlocal data_url, image_b64, image_url, mime_type
+        if not isinstance(entry, dict):
+            return
+        data_url = data_url or entry.get('data_url')
+        image_b64 = image_b64 or entry.get('b64_json') or entry.get('image_base64') or entry.get('base64')
+        image_url = image_url or entry.get('url') or entry.get('image_url')
+        mime_type = entry.get('mime_type') or entry.get('content_type') or mime_type
+
+    result_data = result_json.get('data')
+    if isinstance(result_data, list) and result_data:
+        _extract_from_entry(result_data[0])
+
+    if not data_url and 'images' in result_json and isinstance(result_json['images'], list) and result_json['images']:
+        _extract_from_entry(result_json['images'][0])
+
+    if data_url and data_url.startswith('data:'):
+        stored_data = _store_profile_picture(data_url)
+        return jsonify({"status": "success", "data_url": stored_data})
+
+    if image_b64:
+        cleaned = image_b64.split(',', 1)[-1] if ',' in image_b64 else image_b64
+        data_url = f"data:{mime_type};base64,{cleaned}" if not cleaned.startswith('data:') else cleaned
+        stored_data = _store_profile_picture(data_url)
+        return jsonify({"status": "success", "data_url": stored_data, "image_b64": cleaned, "mime_type": mime_type})
+
+    if image_url:
+        stored_data = _store_profile_picture(image_url)
+        return jsonify({"status": "success", "image_url": stored_data})
+
+    return jsonify({"status": "error", "message": "Image API returned no image data."}), 502
+
 @app.route('/set_ai_name', methods=['POST'])
 def set_ai_name_route():
     global special_persona_mode, special_persona_interactions_left
@@ -422,10 +554,29 @@ def signal_edge_route():
 
 @app.route('/set_profile_picture', methods=['POST'])
 def set_pfp_route():
-    b64_data = request.json.get('pfp_b64')
-    if not b64_data: return jsonify({"status": "error", "message": "Missing image data"}), 400
-    settings.profile_picture_b64 = b64_data; settings.save()
-    return jsonify({"status": "success"})
+    data = request.get_json(silent=True) or {}
+    b64_data = data.get('pfp_b64')
+    if not b64_data:
+        return jsonify({"status": "error", "message": "Missing image data"}), 400
+    stored_data = _store_profile_picture(b64_data)
+    return jsonify({"status": "success", "data_url": stored_data})
+
+
+@app.route('/upload_portrait', methods=['POST'])
+def upload_portrait_route():
+    portrait = request.files.get('portrait')
+    if not portrait:
+        return jsonify({"status": "error", "message": "No portrait file provided."}), 400
+
+    raw_bytes = portrait.read()
+    if not raw_bytes:
+        return jsonify({"status": "error", "message": "Uploaded file was empty."}), 400
+
+    mime_type = portrait.mimetype or 'image/png'
+    encoded = base64.b64encode(raw_bytes).decode('utf-8')
+    data_url = f"data:{mime_type};base64,{encoded}"
+    stored_data = _store_profile_picture(data_url)
+    return jsonify({"status": "success", "data_url": stored_data, "mime_type": mime_type})
 
 @app.route('/set_handy_key', methods=['POST'])
 def set_handy_key_route():

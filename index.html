@@ -162,6 +162,10 @@
                 <img id="ai-pfp-preview" src="/static/default-pfp.png" style="width: 80px; height: 80px; border-radius: 50%; object-fit: cover; margin: 10px auto; display: block; border: 2px solid var(--comment);">
             </label>
             <input type="file" id="pfp-upload" accept="image/*" style="display: none;">
+            <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                <button id="generate-portrait-btn" class="my-button" style="flex: 1;">Generate</button>
+                <button id="upload-portrait-btn" class="my-button" style="flex: 1;">Upload</button>
+            </div>
             <input type="text" id="ai-name-input" class="input-text" placeholder="AI's Name..." style="margin-bottom: 10px;">
             <button id="set-ai-name-btn" class="my-button" style="margin-bottom: 15px;">Set Name</button>
             <input type="text" id="persona-input" class="input-text" placeholder="Describe the AI's persona...">
@@ -216,6 +220,8 @@
         const pfpUploadInput = D.getElementById('pfp-upload');
         const pfpPreview = D.getElementById('ai-pfp-preview');
         const typingIndicatorPfp = D.getElementById('typing-indicator-pfp');
+        const generatePortraitBtn = D.getElementById('generate-portrait-btn');
+        const uploadPortraitBtn = D.getElementById('upload-portrait-btn');
         const toggleSidebarBtn = D.getElementById('toggle-sidebar-btn');
         const imCloseBtn = D.getElementById('im-close-btn');
         const edgingModeBtn = D.getElementById('edging-mode-btn');
@@ -251,6 +257,27 @@
                 </div>`;
             chatMessagesContainer.insertBefore(el, typingIndicator);
             chatView.scrollTop = chatView.scrollHeight;
+        }
+
+        function setPortraitSource(src) {
+            if (!src) return;
+            pfpPreview.src = src;
+            typingIndicatorPfp.src = src;
+            chatMessagesContainer.querySelectorAll('.bot-bubble .chat-pfp').forEach(img => {
+                if (img instanceof HTMLImageElement) {
+                    img.src = src;
+                }
+            });
+        }
+
+        function applyPortraitResponse(data) {
+            if (!data) return false;
+            const src = data.data_url || data.image_url || (data.image_b64 ? `data:${data.mime_type || 'image/png'};base64,${data.image_b64}` : null);
+            if (src) {
+                setPortraitSource(src);
+                return true;
+            }
+            return false;
         }
 
         async function sendUserMessage(message) {
@@ -371,8 +398,7 @@
                     D.querySelector('#typing-indicator .speaker-name').textContent = aiName;
                 }
                 if (data.pfp) {
-                    pfpPreview.src = data.pfp;
-                    typingIndicatorPfp.src = data.pfp;
+                    setPortraitSource(data.pfp);
                 }
                 if(data.elevenlabs_key) {
                     elevenLabsKeyInput.value = data.elevenlabs_key;
@@ -422,18 +448,79 @@
             localStorage.setItem('sidebar_collapsed', isCollapsed);
             setTimeout(resizeCanvas, 350);
         });
-        pfpUploadInput.addEventListener('change', (event) => {
+        if (uploadPortraitBtn) {
+            uploadPortraitBtn.addEventListener('click', () => pfpUploadInput.click());
+        }
+
+        pfpUploadInput.addEventListener('change', async (event) => {
             const file = event.target.files[0];
             if (!file) return;
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                const base64String = reader.result;
-                pfpPreview.src = base64String;
-                typingIndicatorPfp.src = base64String;
-                apiCall('/set_profile_picture', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pfp_b64: base64String }) });
-            };
-            reader.readAsDataURL(file);
+            const originalText = uploadPortraitBtn ? uploadPortraitBtn.textContent : '';
+            try {
+                if (uploadPortraitBtn) {
+                    uploadPortraitBtn.disabled = true;
+                    uploadPortraitBtn.textContent = 'Uploading...';
+                }
+                const formData = new FormData();
+                formData.append('portrait', file);
+                const response = await fetch('/upload_portrait', { method: 'POST', body: formData });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                if (applyPortraitResponse(data)) {
+                    statusText.textContent = 'Portrait updated!';
+                } else if (data && data.message) {
+                    statusText.textContent = `Image error: ${data.message}`;
+                } else {
+                    statusText.textContent = 'Image error: No image returned.';
+                }
+            } catch (err) {
+                console.error('Portrait upload failed', err);
+                statusText.textContent = 'Error: Portrait upload failed.';
+            } finally {
+                if (uploadPortraitBtn) {
+                    uploadPortraitBtn.disabled = false;
+                    uploadPortraitBtn.textContent = originalText || 'Upload';
+                }
+                pfpUploadInput.value = '';
+            }
         });
+
+        if (generatePortraitBtn) {
+            generatePortraitBtn.addEventListener('click', async () => {
+                const originalText = generatePortraitBtn.textContent;
+                try {
+                    generatePortraitBtn.disabled = true;
+                    generatePortraitBtn.textContent = 'Generating...';
+                    statusText.textContent = 'Generating portrait...';
+                    const payload = {
+                        persona_desc: personaInput.value.trim(),
+                        ai_name: aiNameInput.value.trim(),
+                    };
+                    const data = await apiCall('/generate_portrait', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    if (data && data.status === 'success') {
+                        if (applyPortraitResponse(data)) {
+                            statusText.textContent = 'Portrait updated!';
+                        } else {
+                            statusText.textContent = 'Image error: No image returned.';
+                        }
+                    } else if (data && data.message) {
+                        statusText.textContent = `Image error: ${data.message}`;
+                    } else {
+                        statusText.textContent = 'Image error: Unknown response.';
+                    }
+                } catch (err) {
+                    console.error('Portrait generation failed', err);
+                    statusText.textContent = 'Error: Portrait generation failed.';
+                } finally {
+                    generatePortraitBtn.disabled = false;
+                    generatePortraitBtn.textContent = originalText || 'Generate';
+                }
+            });
+        }
         setElevenLabsKeyButton.addEventListener('click', async () => {
             const apiKey = elevenLabsKeyInput.value.trim();
             if(!apiKey) return;

@@ -58,7 +58,36 @@ You need two free programs to run the app.
 * Open in Browser:
     * Open your web browser and go to the following address:
         http://127.0.0.1:5000
-* The splash screen will appear. Press Enter to begin the on-screen setup guide. Enjoy! 
+* The splash screen will appear. Press Enter to begin the on-screen setup guide. Enjoy!
+
+### Optional: Share Your Session with Friends
+
+Want to let someone else connect to your StrokeGPT session remotely? Run the
+share helper to spin up a temporary ngrok tunnel and generate a public URL:
+
+```
+python share.py --port 5000 --pin 1234
+
+```
+
+* `--port` should match the port that the main app is using (default `5000`).
+* `--pin` is optional, but recommended.  Everyone who opens the shared URL
+  will need to enter the PIN before the interface loads.
+* Set the `NGROK_AUTHTOKEN` environment variable if you have an ngrok account
+  for more reliable tunnels.
+
+The script prints both your local URL and the public share link.  Share the
+public address with your friends and keep the terminal running while you play
+together.
+
+### Configuration & Secrets
+
+You do **not** need to create a separate configuration file to run the app.
+Defaults live in `config.py`, which pulls settings from environment variables,
+an optional `.env` file in the project folder, and (if present) a
+platform‑specific secrets file in your user configuration directory. Edit the
+environment variables or `.env` entries if you want to change ports, API keys,
+or default models—otherwise the included defaults will "just work."
 
 *A Quick Note on Speed
 

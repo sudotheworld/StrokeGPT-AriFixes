@@ -40,7 +40,7 @@ chat_history = deque(maxlen=20)
 messages_for_ui = deque()
 auto_mode_active_task = None
 current_mood = "Curious"
-use_long_term_memory = True
+use_long_term_memory = settings.use_long_term_memory
 calibration_pos_mm = 0.0
 user_signal_event = threading.Event()
 mode_message_queue = deque(maxlen=5)
@@ -295,6 +295,29 @@ def api_memory_add():
     return jsonify(mem.add_event(user, text, tags))
 
 
+@app.post("/api/memory/toggle")
+def api_memory_toggle():
+    """Enable or disable long-term persona memory usage."""
+
+    global use_long_term_memory
+
+    payload = request.get_json(silent=True)
+    if isinstance(payload, dict):
+        desired_state = payload.get("enabled")
+        if desired_state is None:
+            desired_state = payload.get("use_long_term_memory")
+    else:
+        desired_state = payload if isinstance(payload, bool) else None
+
+    if not isinstance(desired_state, bool):
+        return jsonify({"ok": False, "error": "Boolean payload required."}), 400
+
+    use_long_term_memory = desired_state
+    settings.use_long_term_memory = desired_state
+    settings.save()
+    return jsonify({"ok": True, "use_long_term_memory": use_long_term_memory})
+
+
 @app.get("/api/memory/recent")
 def api_memory_recent():
     """Return the last `n` memory events.
@@ -424,12 +447,23 @@ def handle_user_message():
 def check_settings_route():
     if settings.handy_key and settings.min_depth < settings.max_depth:
         return jsonify({
-            "configured": True, "persona": settings.persona_desc, "handy_key": settings.handy_key,
-            "ai_name": settings.ai_name, "elevenlabs_key": settings.elevenlabs_api_key,
+            "configured": True,
+            "persona": settings.persona_desc,
+            "handy_key": settings.handy_key,
+            "ai_name": settings.ai_name,
+            "elevenlabs_key": settings.elevenlabs_api_key,
             "pfp": settings.profile_picture_b64,
-            "timings": { "auto_min": settings.auto_min_time, "auto_max": settings.auto_max_time, "milking_min": settings.milking_min_time, "milking_max": settings.milking_max_time, "edging_min": settings.edging_min_time, "edging_max": settings.edging_max_time }
+            "use_long_term_memory": use_long_term_memory,
+            "timings": {
+                "auto_min": settings.auto_min_time,
+                "auto_max": settings.auto_max_time,
+                "milking_min": settings.milking_min_time,
+                "milking_max": settings.milking_max_time,
+                "edging_min": settings.edging_min_time,
+                "edging_max": settings.edging_max_time,
+            }
         })
-    return jsonify({"configured": False})
+    return jsonify({"configured": False, "use_long_term_memory": use_long_term_memory})
 
 @app.route('/set_ai_name', methods=['POST'])
 def set_ai_name_route():

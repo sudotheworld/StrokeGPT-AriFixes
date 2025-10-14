@@ -7,8 +7,10 @@ import atexit
 import threading
 import time
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template_string, send_file, send_from_directory
+from werkzeug.utils import secure_filename
 from config import Config
 
 from settings_manager import SettingsManager
@@ -20,9 +22,15 @@ from background_modes import AutoModeThread, auto_mode_logic, milking_mode_logic
 
 # ─── INITIALIZATION ───────────────────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
+BASE_DIR = Path(__file__).resolve().parent
+FUNSCRIPT_DIR = BASE_DIR / "funscripts"
+FUNSCRIPT_INDEX_FILE = FUNSCRIPT_DIR / "index.json"
+ALLOWED_FUNSCRIPT_EXTENSIONS = {".funscript", ".json"}
 # Removed static LLM_URL; defaults are provided via Config.
 settings = SettingsManager(settings_file_path="my_settings.json")
 settings.load()
+
+FUNSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 
 handy = HandyController(settings.handy_key)
 handy.update_settings(settings.min_speed, settings.max_speed, settings.min_depth, settings.max_depth)
@@ -149,6 +157,48 @@ def start_background_mode(mode_logic, initial_message, mode_name):
     auto_mode_active_task = AutoModeThread(mode_logic, initial_message, services, callbacks, mode_name=mode_name)
     auto_mode_active_task.start()
 
+def _load_funscript_index() -> list:
+    """Return the stored FunScript metadata index."""
+    try:
+        if FUNSCRIPT_INDEX_FILE.exists():
+            with open(FUNSCRIPT_INDEX_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
+
+
+def _save_funscript_index(entries: list) -> None:
+    """Persist the FunScript index to disk."""
+    try:
+        FUNSCRIPT_INDEX_FILE.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _normalise_tags(raw_tags) -> list:
+    """Convert tags supplied as comma-separated string or list into a cleaned list."""
+    if isinstance(raw_tags, str):
+        items = [t.strip() for t in raw_tags.split(",")]
+    elif isinstance(raw_tags, (list, tuple, set)):
+        items = [str(t).strip() for t in raw_tags]
+    else:
+        items = []
+    return [t for t in items if t]
+
+
+def _unique_funscript_filename(base_name: str) -> str:
+    """Return a filename that does not collide with existing files on disk."""
+    candidate = base_name
+    stem = Path(base_name).stem
+    suffix = Path(base_name).suffix
+    counter = 1
+    while (FUNSCRIPT_DIR / candidate).exists():
+        candidate = f"{stem}_{counter}{suffix}"
+        counter += 1
+    return candidate
+
 # ─── FLASK ROUTES ──────────────────────────────────────────────────────────────────────────────────────
 @app.route('/')
 def home_page():
@@ -172,6 +222,161 @@ def health():
         "ollama_url": Config.OLLAMA_URL,
         "handy_key_set": bool(handy.handy_key),
     })
+
+
+@app.post("/funscripts")
+def upload_funscripts():
+    """Accept multipart uploads for FunScript files and persist metadata."""
+    files = request.files.getlist("files")
+    if not files:
+        single = request.files.get("file")
+        if single:
+            files = [single]
+
+    if not files:
+        return jsonify({"error": "No files provided."}), 400
+
+    metadata_map = {}
+    metadata_raw = request.form.get("metadata")
+    if metadata_raw:
+        try:
+            metadata_map = json.loads(metadata_raw) or {}
+        except json.JSONDecodeError:
+            return jsonify({"error": "Invalid metadata payload."}), 400
+
+    index = _load_funscript_index()
+    uploaded_entries = []
+    skipped_entries = []
+
+    for storage in files:
+        original_name = storage.filename or ""
+        safe_name = secure_filename(original_name)
+        if not safe_name:
+            skipped_entries.append({"filename": original_name, "reason": "invalid_filename"})
+            continue
+
+        suffix = Path(safe_name).suffix.lower()
+        if suffix not in ALLOWED_FUNSCRIPT_EXTENSIONS:
+            skipped_entries.append({"filename": original_name or safe_name, "reason": "unsupported_extension"})
+            continue
+
+        final_name = _unique_funscript_filename(safe_name)
+        file_path = FUNSCRIPT_DIR / final_name
+
+        try:
+            storage.save(file_path)
+        except Exception:
+            skipped_entries.append({"filename": original_name or safe_name, "reason": "save_failed"})
+            if file_path.exists():
+                try:
+                    file_path.unlink()
+                except Exception:
+                    pass
+            continue
+
+        meta = metadata_map.get(original_name) or metadata_map.get(safe_name) or {}
+        display_name = str(meta.get("name") or Path(original_name or final_name).stem)
+        tags = _normalise_tags(meta.get("tags"))
+
+        try:
+            file_size = file_path.stat().st_size
+        except OSError:
+            file_size = None
+
+        entry = {
+            "name": display_name,
+            "filename": final_name,
+            "original_filename": original_name,
+            "tags": tags,
+            "uploaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        }
+        if file_size is not None:
+            entry["size"] = file_size
+
+        index = [item for item in index if isinstance(item, dict) and item.get("filename") != final_name]
+        index.append(entry)
+        uploaded_entries.append(entry)
+
+    if uploaded_entries:
+        index.sort(key=lambda item: (item.get("name") or item.get("filename") or "").lower())
+        _save_funscript_index(index)
+
+    response = {"uploaded": uploaded_entries}
+    if skipped_entries:
+        response["skipped"] = skipped_entries
+
+    if not uploaded_entries:
+        response.setdefault("error", "No valid FunScript files were uploaded.")
+        return jsonify(response), 400
+
+    return jsonify(response)
+
+
+@app.get("/funscripts")
+def list_funscripts():
+    """Return the available FunScript metadata."""
+    stored_entries = _load_funscript_index()
+    filtered_entries = []
+    changed = False
+
+    for entry in stored_entries:
+        if not isinstance(entry, dict):
+            changed = True
+            continue
+        filename = entry.get("filename")
+        if not filename:
+            changed = True
+            continue
+        file_path = FUNSCRIPT_DIR / filename
+        if not file_path.exists():
+            changed = True
+            continue
+        filtered_entries.append(entry)
+
+    sorted_entries = sorted(
+        filtered_entries,
+        key=lambda item: (item.get("name") or item.get("filename") or "").lower(),
+    )
+
+    if changed:
+        _save_funscript_index(sorted_entries)
+
+    response_entries = []
+    for entry in sorted_entries:
+        enriched = dict(entry)
+        file_path = FUNSCRIPT_DIR / entry["filename"]
+        try:
+            enriched["size"] = file_path.stat().st_size
+        except OSError:
+            enriched.setdefault("size", entry.get("size"))
+        response_entries.append(enriched)
+
+    return jsonify({"funscripts": response_entries})
+
+
+@app.get("/funscripts/<path:filename>")
+def stream_funscript(filename: str):
+    """Stream a FunScript file for playback."""
+    safe_name = secure_filename(filename)
+    if not safe_name:
+        return jsonify({"error": "Not found."}), 404
+
+    entries = _load_funscript_index()
+    allowed_names = {entry.get("filename") for entry in entries if isinstance(entry, dict)}
+    if safe_name not in allowed_names:
+        return jsonify({"error": "Not found."}), 404
+
+    file_path = FUNSCRIPT_DIR / safe_name
+    if not file_path.exists():
+        return jsonify({"error": "Not found."}), 404
+
+    return send_from_directory(
+        FUNSCRIPT_DIR,
+        safe_name,
+        mimetype="application/json",
+        as_attachment=False,
+        conditional=True,
+    )
 
 # -------------------------------------------------------------------------
 # Feedback and A/B choice helpers and endpoints

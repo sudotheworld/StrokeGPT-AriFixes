@@ -207,6 +207,8 @@
     background: rgba(0,0,0,0.2);
     display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
   }
+  .dropzone.dragover{ border-color: var(--brand1); box-shadow: 0 0 12px color-mix(in oklab, var(--brand1) 40%, transparent); }
+  .dropzone.uploading{ border-style: solid; opacity: .8; }
   .dropzone .hint{ color: var(--muted); font-size: 12px; }
   .dropzone .chipbtn{
     border: 1px solid var(--edge); border-radius: var(--chip);
@@ -214,6 +216,71 @@
     padding:10px 14px; cursor:pointer; font-weight:800;
   }
   .dropzone .chipbtn:hover { filter: brightness(1.2); }
+
+  .funs-library-panel{
+    margin: 0 14px 16px 14px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--edge);
+    background: rgba(0,0,0,0.2);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .funs-library-panel .library-header{
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .funs-library-panel .library-header b{ font-size: 14px; letter-spacing: .3px; }
+  .library-refresh{
+    border: 1px solid var(--edge);
+    border-radius: var(--chip);
+    background: rgba(10,10,10,.5);
+    color: var(--text);
+    padding: 8px 12px;
+    font-weight: 800;
+    cursor: pointer;
+    transition: .2s;
+  }
+  .library-refresh:hover{ filter: brightness(1.2); }
+  .funs-library-panel .muted{ color: var(--muted); }
+  .funs-library-list{
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .funs-item{
+    display:flex;
+    align-items:flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--edge);
+    background: rgba(8,8,12,0.6);
+  }
+  .funs-item a{
+    color: var(--brand1);
+    font-weight: 700;
+    text-decoration: none;
+  }
+  .funs-item a:hover{ text-decoration: underline; }
+  .funs-item .meta{ display:flex; flex-direction:column; gap:4px; }
+  .funs-item .tags{ display:flex; flex-wrap:wrap; gap:6px; }
+  .funs-item .tag{
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 10px;
+    background: rgba(255,255,255,0.08);
+    color: var(--muted);
+    letter-spacing: .3px;
+  }
+  .funs-item .uploaded{ font-size: 11px; color: var(--muted); white-space: nowrap; }
 
   /* PiP Browser (draggable + resizable) */
   .pip{
@@ -407,6 +474,14 @@
           <button class="chipbtn" id="browseFuns">Add Files</button>
           <input id="funsInput" type="file" accept=".funscript,.json" multiple style="display:none" />
         </div>
+      </div>
+      <div class="panel funs-library-panel" id="funsLibraryPanel">
+        <div class="library-header">
+          <b>Available Scripts</b>
+          <button class="library-refresh" id="refreshFuns">Refresh</button>
+        </div>
+        <div class="muted" id="funsLibraryEmpty">No FunScripts uploaded yet.</div>
+        <ul class="funs-library-list" id="funsLibraryList"></ul>
       </div>
     </main>
 
@@ -605,24 +680,171 @@
   const drop = document.getElementById('funsDrop');
   const browse = document.getElementById('browseFuns');
   const finput = document.getElementById('funsInput');
-  browse?.addEventListener('click', ()=> finput.click());
-  function handleFiles(files){
-    const good = [];
-    [...files].forEach(f => {
-      if(/\.(funscript|json)$/i.test(f.name)) good.push(f.name);
-    });
-    if(good.length) toast('Added to Library: ' + good.slice(0,3).join(', ') + (good.length>3?' +…':''));
+  const libraryList = document.getElementById('funsLibraryList');
+  const libraryEmpty = document.getElementById('funsLibraryEmpty');
+  const refreshFuns = document.getElementById('refreshFuns');
+  const funscriptExt = /\.(funscript|json)$/i;
+
+  browse?.addEventListener('click', () => finput?.click());
+
+  function parseTagList(value){
+    if(Array.isArray(value)) return value.map(v => `${v}`.trim()).filter(Boolean);
+    if(typeof value === 'string') return value.split(',').map(v => v.trim()).filter(Boolean);
+    return [];
   }
-  finput?.addEventListener('change', (e)=> handleFiles(e.target.files));
-  ;['dragover','dragleave','drop'].forEach(evt=> drop.addEventListener(evt, e => {
+
+  function formatBytes(bytes){
+    const num = Number(bytes);
+    if(!Number.isFinite(num) || num < 0) return '';
+    if(num < 1024) return `${num} B`;
+    if(num < 1024 * 1024) return `${(num / 1024).toFixed(1)} KB`;
+    return `${(num / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  async function refreshLibrary(){
+    if(!libraryList) return;
+    try{
+      const res = await fetch('/funscripts');
+      if(!res.ok) throw new Error('Failed to load FunScripts');
+      let data = {};
+      try { data = await res.json(); } catch { data = {}; }
+      const entries = Array.isArray(data.funscripts) ? data.funscripts : [];
+      libraryList.innerHTML = '';
+      if(libraryEmpty) libraryEmpty.style.display = entries.length ? 'none' : 'block';
+      entries.forEach(entry => {
+        if(!entry || !entry.filename) return;
+        const li = document.createElement('li');
+        li.className = 'funs-item';
+
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+
+        const link = document.createElement('a');
+        link.href = `/funscripts/${encodeURIComponent(entry.filename)}`;
+        link.textContent = entry.name || entry.filename;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        meta.appendChild(link);
+
+        const tags = parseTagList(entry.tags);
+        if(tags.length){
+          const tagsWrap = document.createElement('div');
+          tagsWrap.className = 'tags';
+          tags.forEach(tag => {
+            const span = document.createElement('span');
+            span.className = 'tag';
+            span.textContent = tag;
+            tagsWrap.appendChild(span);
+          });
+          meta.appendChild(tagsWrap);
+        }
+
+        li.appendChild(meta);
+
+        const details = [];
+        if(entry.uploaded_at){
+          const dt = new Date(entry.uploaded_at);
+          if(!Number.isNaN(dt.valueOf())) details.push(dt.toLocaleString());
+        }
+        if(entry.size !== undefined){
+          const readable = formatBytes(entry.size);
+          if(readable) details.push(readable);
+        }
+        if(details.length){
+          const info = document.createElement('div');
+          info.className = 'uploaded';
+          info.textContent = details.join(' • ');
+          li.appendChild(info);
+        }
+
+        libraryList.appendChild(li);
+      });
+    } catch (err){
+      console.error(err);
+      toast('Failed to load FunScripts');
+      if(libraryEmpty) libraryEmpty.style.display = 'block';
+    }
+  }
+
+  async function uploadFiles(fileList){
+    const files = [...fileList].filter(file => funscriptExt.test(file.name));
+    if(!files.length){
+      toast('Only .funscript or .json files are supported.');
+      return;
+    }
+
+    const formData = new FormData();
+    const metadata = {};
+    files.forEach(file => {
+      formData.append('files', file);
+      metadata[file.name] = { name: file.name.replace(/\.[^.]+$/, '') };
+    });
+    formData.append('metadata', JSON.stringify(metadata));
+
+    drop?.classList?.add('uploading');
+    try{
+      const res = await fetch('/funscripts', { method: 'POST', body: formData });
+      let payload = {};
+      try { payload = await res.json(); } catch { payload = {}; }
+      if(!res.ok){
+        const message = payload?.error || 'Upload failed';
+        throw new Error(message);
+      }
+      const uploaded = Array.isArray(payload.uploaded) ? payload.uploaded : [];
+      if(uploaded.length){
+        const names = uploaded.map(item => item.name || item.filename);
+        toast('Uploaded: ' + names.slice(0,3).join(', ') + (names.length > 3 ? ' +…' : ''));
+      }
+      const skipped = Array.isArray(payload.skipped) ? payload.skipped : [];
+      if(skipped.length && !uploaded.length){
+        const names = skipped.map(item => item.filename).filter(Boolean);
+        if(names.length) toast('Skipped: ' + names.slice(0,3).join(', '));
+      }
+    } catch (err){
+      console.error(err);
+      toast(err?.message || 'Upload failed');
+    } finally {
+      drop?.classList?.remove('uploading');
+      await refreshLibrary();
+    }
+  }
+
+  finput?.addEventListener('change', e => {
+    const input = e.target;
+    if(input?.files?.length){
+      uploadFiles(input.files);
+      input.value = '';
+    }
+  });
+
+  refreshFuns?.addEventListener('click', () => {
+    refreshLibrary();
+  });
+
+  ['dragover','dragleave','drop'].forEach(evt => drop?.addEventListener(evt, e => {
     e.preventDefault(); e.stopPropagation();
-    if(evt === 'dragover'){ drop.style.borderColor = 'var(--brand1)'; }
-    if(evt === 'dragleave'){ drop.style.borderColor = 'rgba(255, 0, 150, 0.5)'; }
+    if(evt === 'dragover'){
+      drop.classList.add('dragover');
+    }
+    if(evt === 'dragleave'){
+      drop.classList.remove('dragover');
+    }
     if(evt === 'drop'){
-      drop.style.borderColor = 'rgba(255, 0, 150, 0.5)';
-      handleFiles(e.dataTransfer.files);
+      drop.classList.remove('dragover');
+      if(e.dataTransfer?.files?.length){
+        uploadFiles(e.dataTransfer.files);
+      }
     }
   }));
+
+  window.addEventListener('paste', e => {
+    const files = e.clipboardData?.files;
+    if(files?.length){
+      uploadFiles(files);
+    }
+  });
+
+  refreshLibrary();
 
   // PiP
   const togglePip = document.getElementById('togglePip');

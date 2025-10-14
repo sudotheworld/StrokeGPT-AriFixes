@@ -16,7 +16,7 @@ from handy_controller import HandyController
 from memory_manager import MemoryManager
 from llm_service import LLMService
 from audio_service import AudioService
-from background_modes import AutoModeThread, auto_mode_logic, milking_mode_logic, edging_mode_logic
+from background_modes import AutoModeThread, auto_mode_logic, milking_mode_logic, edging_mode_logic, duel_mode_logic
 
 # ─── INITIALIZATION ───────────────────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -120,16 +120,23 @@ def start_background_mode(mode_logic, initial_message, mode_name):
     if auto_mode_active_task:
         auto_mode_active_task.stop()
         auto_mode_active_task.join(timeout=5)
-    
+
     user_signal_event.clear()
     mode_message_queue.clear()
+
+    def set_edging_timer(active: bool):
+        global edging_start_time
+        edging_start_time = time.time() if active else None
+
     if mode_name == 'edging':
-        edging_start_time = time.time()
-    
+        set_edging_timer(True)
+    else:
+        set_edging_timer(False)
+
     def on_stop():
-        global auto_mode_active_task, edging_start_time
+        global auto_mode_active_task
         auto_mode_active_task = None
-        edging_start_time = None
+        set_edging_timer(False)
 
     def update_mood(m): global current_mood; current_mood = m
     def get_timings(n):
@@ -144,10 +151,29 @@ def start_background_mode(mode_logic, initial_message, mode_name):
         'send_message': add_message_to_queue, 'get_context': get_current_context,
         'get_timings': get_timings, 'on_stop': on_stop, 'update_mood': update_mood,
         'user_signal_event': user_signal_event,
-        'message_queue': mode_message_queue
+        'message_queue': mode_message_queue,
+        'set_edging_timer': set_edging_timer
     }
     auto_mode_active_task = AutoModeThread(mode_logic, initial_message, services, callbacks, mode_name=mode_name)
     auto_mode_active_task.start()
+
+
+def _stop_auto_mode_task():
+    """Signal the active background mode to stop and wait for it."""
+    global auto_mode_active_task, edging_start_time
+    if not auto_mode_active_task:
+        return "no_task"
+
+    active_task = auto_mode_active_task
+    active_task.stop()
+    active_task.join(timeout=5)
+
+    if active_task.is_alive():
+        return "timeout"
+
+    auto_mode_active_task = None
+    edging_start_time = None
+    return "stopped"
 
 # ─── FLASK ROUTES ──────────────────────────────────────────────────────────────────────────────────────
 @app.route('/')
@@ -503,10 +529,35 @@ def start_milking_route():
     start_background_mode(milking_mode_logic, "You're so close... I'm taking over completely now.", mode_name='milking')
     return jsonify({"status": "milking_started"})
 
+@app.route('/start_duel_mode', methods=['POST'])
+def start_duel_route():
+    if auto_mode_active_task and getattr(auto_mode_active_task, 'name', '') == 'duel':
+        return jsonify({"status": "noop", "message": "Battle Mode is already running."})
+
+    start_background_mode(
+        duel_mode_logic,
+        "Battle Mode engaged. Two personas are fighting for control.",
+        mode_name='duel'
+    )
+    return jsonify({"status": "ok", "message": "Battle Mode engaged."})
+
 @app.route('/stop_auto_mode', methods=['POST'])
 def stop_auto_route():
-    if auto_mode_active_task: auto_mode_active_task.stop()
-    return jsonify({"status": "auto_mode_stopped"})
+    result = _stop_auto_mode_task()
+    if result == "stopped":
+        return jsonify({"status": "ok", "message": "Auto mode stopped."})
+    if result == "no_task":
+        return jsonify({"status": "noop", "message": "No background mode was active."})
+    return jsonify({"status": "error", "message": "Timed out waiting for auto mode to stop."}), 504
+
+@app.route('/stop_duel_mode', methods=['POST'])
+def stop_duel_route():
+    result = _stop_auto_mode_task()
+    if result == "stopped":
+        return jsonify({"status": "ok", "message": "Battle Mode disengaged."})
+    if result == "no_task":
+        return jsonify({"status": "noop", "message": "Battle Mode was not active."})
+    return jsonify({"status": "error", "message": "Timed out waiting for Battle Mode to halt."}), 504
 
 # ─── APP STARTUP ───────────────────────────────────────────────────────────────────────────────────
 def on_exit():

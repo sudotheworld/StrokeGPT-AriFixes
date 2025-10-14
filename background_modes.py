@@ -156,3 +156,41 @@ def edging_mode_logic(stop_event, services, callbacks):
     if not stop_event.is_set():
         send_message(f"You did so well, holding it in for {edge_count} edges...")
         update_mood("Afterglow")
+
+
+def duel_mode_logic(stop_event, services, callbacks):
+    """Alternate between edging and milking until stopped."""
+    send_message = callbacks.get('send_message')
+    set_edging_timer = callbacks.get('set_edging_timer')
+
+    phases = [
+        {
+            'name': 'edging',
+            'logic': edging_mode_logic,
+            'announce': "I'll toy with you first… let's see how long you can hold out.",
+        },
+        {
+            'name': 'milking',
+            'logic': milking_mode_logic,
+            'announce': "Now I'm done teasing—I'm going to take everything from you.",
+        },
+    ]
+
+    phase_index = 0
+    while not stop_event.is_set():
+        phase = phases[phase_index]
+        phase_index = (phase_index + 1) % len(phases)
+
+        if send_message and phase['announce']:
+            send_message(phase['announce'])
+
+        if phase['name'] == 'edging' and set_edging_timer:
+            set_edging_timer(True)
+
+        phase['logic'](stop_event, services, callbacks)
+
+        if phase['name'] == 'edging' and set_edging_timer:
+            set_edging_timer(False)
+
+        if not stop_event.is_set() and send_message:
+            send_message("Catch your breath… the next challenger is already stepping in.")

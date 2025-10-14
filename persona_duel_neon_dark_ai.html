@@ -207,6 +207,10 @@
     background: rgba(0,0,0,0.2);
     display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
   }
+  .dropzone.loading{
+    border-color: var(--brand2);
+    box-shadow: 0 0 12px rgba(0, 255, 255, 0.35);
+  }
   .dropzone .hint{ color: var(--muted); font-size: 12px; }
   .dropzone .chipbtn{
     border: 1px solid var(--edge); border-radius: var(--chip);
@@ -214,6 +218,44 @@
     padding:10px 14px; cursor:pointer; font-weight:800;
   }
   .dropzone .chipbtn:hover { filter: brightness(1.2); }
+
+  .funs-library{
+    margin-top: 12px;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    padding-top: 12px;
+    width: 100%;
+    display:flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .funs-status{
+    font-size: 12px;
+    color: var(--muted);
+    letter-spacing: .2px;
+  }
+  .funs-status[data-state="success"]{ color: var(--brand2); }
+  .funs-status[data-state="error"]{ color: var(--bad); }
+  .funs-status[data-state="warn"]{ color: var(--warn); }
+  .funs-list{
+    display:flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 220px;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+  .funs-card{
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+    background: rgba(0,0,0,0.35);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05);
+  }
+  .funs-card .title{ font-weight: 700; letter-spacing: .3px; margin-bottom: 4px; }
+  .funs-card .meta{ font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+  .funs-card .summary{ font-size: 12px; margin-top: 6px; line-height: 1.4; }
+  .funs-tags{ display:flex; flex-wrap:wrap; gap:6px; margin-top: 6px; }
+  .funs-tag{ font-size: 10px; text-transform: uppercase; background: rgba(255,255,255,0.08); padding:3px 8px; border-radius: var(--chip); letter-spacing:.5px; }
 
   /* PiP Browser (draggable + resizable) */
   .pip{
@@ -406,6 +448,10 @@
         <div class="row" style="flex:0 0 auto;">
           <button class="chipbtn" id="browseFuns">Add Files</button>
           <input id="funsInput" type="file" accept=".funscript,.json" multiple style="display:none" />
+        </div>
+        <div class="funs-library" id="funsLibrary">
+          <div class="funs-status" id="funsStatus" data-state="idle">No FunScripts uploaded yet.</div>
+          <div class="funs-list" id="funsList"></div>
         </div>
       </div>
     </main>
@@ -605,24 +651,126 @@
   const drop = document.getElementById('funsDrop');
   const browse = document.getElementById('browseFuns');
   const finput = document.getElementById('funsInput');
-  browse?.addEventListener('click', ()=> finput.click());
-  function handleFiles(files){
-    const good = [];
-    [...files].forEach(f => {
-      if(/\.(funscript|json)$/i.test(f.name)) good.push(f.name);
-    });
-    if(good.length) toast('Added to Library: ' + good.slice(0,3).join(', ') + (good.length>3?' +…':''));
+  const funsStatus = document.getElementById('funsStatus');
+  const funsList = document.getElementById('funsList');
+
+  function setFunsStatus(msg, state = 'info'){
+    if(!funsStatus) return;
+    funsStatus.textContent = msg;
+    funsStatus.setAttribute('data-state', state);
   }
-  finput?.addEventListener('change', (e)=> handleFiles(e.target.files));
-  ;['dragover','dragleave','drop'].forEach(evt=> drop.addEventListener(evt, e => {
+
+  function renderFunsCatalog(catalog){
+    if(!funsList) return;
+    funsList.innerHTML = '';
+    if(!catalog || !catalog.length){
+      setFunsStatus('No FunScripts uploaded yet.', 'idle');
+      return;
+    }
+    setFunsStatus(`Loaded ${catalog.length} FunScript${catalog.length === 1 ? '' : 's'}.`, 'success');
+    catalog.forEach(entry => {
+      const card = document.createElement('div');
+      card.className = 'funs-card';
+      const title = document.createElement('div');
+      title.className = 'title';
+      title.textContent = entry.name || 'FunScript';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const duration = entry.metrics?.duration_ms ? Math.round(entry.metrics.duration_ms / 1000) : 0;
+      meta.textContent = duration ? `${duration}s • ${entry.metrics?.intensity ?? 0}% intensity` : 'Awaiting metrics';
+      const summary = document.createElement('div');
+      summary.className = 'summary';
+      summary.textContent = entry.analysis?.summary || 'No summary available yet.';
+      const tags = document.createElement('div');
+      tags.className = 'funs-tags';
+      (entry.analysis?.style_tags || []).slice(0,5).forEach(tag => {
+        const chip = document.createElement('span');
+        chip.className = 'funs-tag';
+        chip.textContent = tag;
+        tags.appendChild(chip);
+      });
+      card.appendChild(title);
+      card.appendChild(meta);
+      card.appendChild(summary);
+      if(entry.analysis?.signature_moves?.length){
+        const move = entry.analysis.signature_moves[0];
+        const moveLine = document.createElement('div');
+        moveLine.className = 'meta';
+        moveLine.textContent = `Signature move: ${move.label}`;
+        card.appendChild(moveLine);
+      }
+      if(tags.children.length) card.appendChild(tags);
+      funsList.appendChild(card);
+    });
+  }
+
+  async function refreshFunsCatalog(){
+    setFunsStatus('Loading FunScript library…', 'info');
+    try{
+      const res = await fetch('/api/funscripts');
+      if(!res.ok) throw new Error('Failed to fetch');
+      const data = await res.json();
+      renderFunsCatalog(data.catalog || []);
+    } catch(err){
+      console.warn('FunScript catalog load failed', err);
+      setFunsStatus('Unable to load FunScript catalog.', 'warn');
+    }
+  }
+
+  async function uploadFunscripts(files){
+    if(!files.length) return;
+    const form = new FormData();
+    files.forEach(file => form.append('files', file));
+    drop?.classList.add('loading');
+    setFunsStatus(`Uploading ${files.length} file${files.length === 1 ? '' : 's'}…`, 'info');
+    try{
+      const res = await fetch('/api/funscripts', { method:'POST', body: form });
+      const data = await res.json();
+      if(res.status === 200 || res.status === 207){
+        const processed = data.processed?.length ?? 0;
+        const state = res.status === 207 ? 'warn' : 'success';
+        setFunsStatus(`Processed ${processed} file${processed === 1 ? '' : 's'}.`, state);
+        if(data.errors?.length){
+          toast(`${data.errors.length} upload${data.errors.length === 1 ? '' : 's'} skipped.`);
+        }
+        renderFunsCatalog(data.catalog || []);
+      } else {
+        const message = data.errors?.[0]?.message || data.message || 'Upload failed.';
+        setFunsStatus(message, 'error');
+      }
+    } catch(err){
+      console.error('FunScript upload failed', err);
+      setFunsStatus('Upload failed. See console for details.', 'error');
+    } finally {
+      drop?.classList.remove('loading');
+    }
+  }
+
+  function filterFuns(files){
+    return [...files].filter(f => /\.(funscript|json)$/i.test(f.name));
+  }
+
+  browse?.addEventListener('click', ()=> finput?.click());
+  finput?.addEventListener('change', (e)=>{
+    const files = filterFuns(e.target.files || []);
+    if(!files.length) return setFunsStatus('No FunScript files selected.', 'warn');
+    uploadFunscripts(files);
+    e.target.value = '';
+  });
+
+  ['dragover','dragleave','drop'].forEach(evt=> drop?.addEventListener(evt, e => {
     e.preventDefault(); e.stopPropagation();
-    if(evt === 'dragover'){ drop.style.borderColor = 'var(--brand1)'; }
-    if(evt === 'dragleave'){ drop.style.borderColor = 'rgba(255, 0, 150, 0.5)'; }
+    if(evt === 'dragover'){ drop.classList.add('loading'); }
+    if(evt === 'dragleave'){ drop.classList.remove('loading'); }
     if(evt === 'drop'){
-      drop.style.borderColor = 'rgba(255, 0, 150, 0.5)';
-      handleFiles(e.dataTransfer.files);
+      drop.classList.remove('loading');
+      const files = filterFuns(e.dataTransfer.files || []);
+      if(!files.length) return setFunsStatus('No FunScript files detected.', 'warn');
+      uploadFunscripts(files);
     }
   }));
+
+  refreshFunsCatalog();
 
   // PiP
   const togglePip = document.getElementById('togglePip');

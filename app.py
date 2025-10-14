@@ -17,6 +17,7 @@ from memory_manager import MemoryManager
 from llm_service import LLMService
 from audio_service import AudioService
 from background_modes import AutoModeThread, auto_mode_logic, milking_mode_logic, edging_mode_logic
+from funscript_utils import compute_metrics, compute_segments, hash_funscript, load_actions_from_bytes
 
 # ─── INITIALIZATION ───────────────────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -106,6 +107,26 @@ def get_current_context():
             context['edging_elapsed_time'] = f"{hours}h {minutes}m {seconds}s"
         else:
             context['edging_elapsed_time'] = f"{minutes}m {seconds}s"
+
+    insights = []
+    for entry in settings.list_funscripts()[:3]:
+        analysis = entry.get("analysis") or {}
+        summary = analysis.get("summary")
+        if not summary:
+            continue
+        tags = analysis.get("style_tags") or []
+        tag_text = f" ({', '.join(tags[:3])})" if tags else ""
+        move_label = None
+        moves = analysis.get("signature_moves") or []
+        if moves:
+            move_label = moves[0].get("label")
+        snippet = f"{entry.get('name', 'FunScript')} – {summary}{tag_text}"
+        if move_label:
+            snippet += f" | Signature move: {move_label}"
+        insights.append(snippet)
+    if insights:
+        context['funscript_insights'] = insights
+
     return context
 
 def add_message_to_queue(text, add_to_history=True):
@@ -467,6 +488,68 @@ def get_ui_updates_route():
 @app.route('/get_status')
 def get_status_route():
     return jsonify({"mood": current_mood, "speed": handy.last_stroke_speed, "depth": handy.last_depth_pos})
+
+@app.get('/api/funscripts')
+def get_funscripts_route():
+    return jsonify({"catalog": settings.list_funscripts()})
+
+
+@app.post('/api/funscripts')
+def upload_funscripts_route():
+    if 'files' not in request.files:
+        return jsonify({"status": "error", "message": "No files provided"}), 400
+
+    uploaded_files = request.files.getlist('files')
+    if not uploaded_files:
+        return jsonify({"status": "error", "message": "No files provided"}), 400
+
+    processed = []
+    errors = []
+
+    for fs in uploaded_files:
+        filename = fs.filename or "FunScript"
+        raw = fs.read()
+        if not raw:
+            errors.append({"file": filename, "message": "Empty file"})
+            continue
+
+        digest = hash_funscript(raw)
+        try:
+            actions = load_actions_from_bytes(raw)
+        except ValueError:
+            errors.append({"file": filename, "message": "Invalid FunScript JSON"})
+            continue
+
+        metrics = compute_metrics(actions)
+        segments = compute_segments(actions)
+        truncated_segments = segments[:12]
+
+        existing = settings.get_funscript_by_hash(digest)
+        entry = dict(existing) if existing else {}
+        entry.update({
+            "id": entry.get("id", digest),
+            "sha1": digest,
+            "name": filename,
+            "metrics": metrics,
+            "segments": truncated_segments,
+            "uploaded_at": time.time(),
+        })
+
+        if not entry.get("analysis"):
+            analysis = llm.analyze_funscript_patterns(metrics, truncated_segments)
+            entry["analysis"] = analysis
+
+        settings.update_funscript_entry(entry)
+        processed.append(entry)
+
+    status_code = 207 if errors and processed else (400 if errors else 200)
+    return jsonify({
+        "status": "ok" if processed else "error",
+        "catalog": settings.list_funscripts(),
+        "processed": processed,
+        "errors": errors,
+    }), status_code
+
 
 @app.route('/set_depth_limits', methods=['POST'])
 def set_depth_limits_route():

@@ -17,6 +17,7 @@ class SettingsManager:
         self.rules = []
         self.user_profile = self._get_default_profile()
         self.session_liked_patterns = []
+        self.funscript_catalog = {}
         self.elevenlabs_api_key = ""
         self.elevenlabs_voice_id = ""
         self.min_depth = 5
@@ -49,6 +50,10 @@ class SettingsManager:
             self.milking_patterns = data.get("milking_patterns", [])
             self.rules = data.get("rules", [])
             self.user_profile = data.get("user_profile", self._get_default_profile())
+            catalog = data.get("funscript_catalog", {})
+            if isinstance(catalog, list):
+                catalog = {str(entry.get("id", idx)): entry for idx, entry in enumerate(catalog)}
+            self.funscript_catalog = catalog
             self.elevenlabs_api_key = data.get("elevenlabs_api_key", "")
             self.elevenlabs_voice_id = data.get("elevenlabs_voice_id", "")
             self.min_depth = data.get("min_depth", 5)
@@ -87,6 +92,7 @@ class SettingsManager:
                 "elevenlabs_api_key": self.elevenlabs_api_key, "elevenlabs_voice_id": self.elevenlabs_voice_id,
                 "patterns": self.patterns, "milking_patterns": self.milking_patterns,
                 "rules": self.rules, "user_profile": self.user_profile,
+                "funscript_catalog": self.funscript_catalog,
                 "min_depth": self.min_depth, "max_depth": self.max_depth,
                 "min_speed": self.min_speed, "max_speed": self.max_speed,
                 "auto_min_time": self.auto_min_time, "auto_max_time": self.auto_max_time,
@@ -94,3 +100,20 @@ class SettingsManager:
                 "edging_min_time": self.edging_min_time, "edging_max_time": self.edging_max_time,
             }
             self.file_path.write_text(json.dumps(settings_dict, indent=2))
+
+    def list_funscripts(self):
+        items = list(self.funscript_catalog.values())
+        items.sort(key=lambda x: x.get("uploaded_at", 0), reverse=True)
+        return items
+
+    def get_funscript_by_hash(self, digest: str):
+        for entry in self.funscript_catalog.values():
+            if entry.get("sha1") == digest:
+                return entry
+        return None
+
+    def update_funscript_entry(self, entry: dict):
+        if not entry or "id" not in entry:
+            return
+        self.funscript_catalog[str(entry["id"])] = entry
+        self.save()

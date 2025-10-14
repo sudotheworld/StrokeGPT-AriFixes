@@ -434,6 +434,15 @@ def set_handy_key_route():
     handy.set_api_key(key); settings.handy_key = key; settings.save()
     return jsonify({"status": "success"})
 
+@app.route('/set_image_key', methods=['POST'])
+def set_image_key_route():
+    key = (request.json or {}).get('key', '').strip()
+    if not key:
+        return jsonify({"status": "error", "message": "Key is missing"}), 400
+    settings.image_api_key = key
+    settings.save()
+    return jsonify({"status": "success"})
+
 @app.route('/nudge', methods=['POST'])
 def nudge_route():
     global calibration_pos_mm

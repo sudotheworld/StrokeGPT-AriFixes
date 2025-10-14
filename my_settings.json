@@ -5,6 +5,7 @@
   "profile_picture_b64": "",
   "elevenlabs_api_key": "",
   "elevenlabs_voice_id": "",
+  "image_api_key": "",
   "patterns": [],
   "milking_patterns": [],
   "rules": [],

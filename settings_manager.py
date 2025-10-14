@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import threading
 
+
 class SettingsManager:
     def __init__(self, settings_file_path):
         self.file_path = Path(settings_file_path)
@@ -9,7 +10,7 @@ class SettingsManager:
 
         # Default values
         self.handy_key = ""
-        self.ai_name = "BOT" # New field
+        self.ai_name = "BOT"  # New field
         self.persona_desc = "An energetic and passionate girlfriend"
         self.profile_picture_b64 = ""
         self.patterns = []
@@ -19,6 +20,7 @@ class SettingsManager:
         self.session_liked_patterns = []
         self.elevenlabs_api_key = ""
         self.elevenlabs_voice_id = ""
+        self.image_api_key = ""
         self.min_depth = 5
         self.max_depth = 100
         self.min_speed = 10
@@ -42,7 +44,7 @@ class SettingsManager:
         try:
             data = json.loads(self.file_path.read_text())
             self.handy_key = data.get("handy_key", "")
-            self.ai_name = data.get("ai_name", "BOT") # Load name
+            self.ai_name = data.get("ai_name", "BOT")  # Load name
             self.persona_desc = data.get("persona_desc", "An energetic and passionate girlfriend")
             self.profile_picture_b64 = data.get("profile_picture_b64", "")
             self.patterns = data.get("patterns", [])
@@ -51,6 +53,7 @@ class SettingsManager:
             self.user_profile = data.get("user_profile", self._get_default_profile())
             self.elevenlabs_api_key = data.get("elevenlabs_api_key", "")
             self.elevenlabs_voice_id = data.get("elevenlabs_voice_id", "")
+            self.image_api_key = data.get("image_api_key", "")
             self.min_depth = data.get("min_depth", 5)
             self.max_depth = data.get("max_depth", 100)
             self.min_speed = data.get("min_speed", 10)
@@ -71,7 +74,7 @@ class SettingsManager:
                 self.user_profile = llm_service.consolidate_user_profile(
                     list(chat_history_to_save), self.user_profile
                 )
-            
+
             if self.session_liked_patterns:
                 print(f"🧠 Saving {len(self.session_liked_patterns)} liked patterns...")
                 for new_pattern in self.session_liked_patterns:
@@ -81,16 +84,25 @@ class SettingsManager:
 
             settings_dict = {
                 "handy_key": self.handy_key,
-                "ai_name": self.ai_name, # Save name
+                "ai_name": self.ai_name,  # Save name
                 "persona_desc": self.persona_desc,
                 "profile_picture_b64": self.profile_picture_b64,
-                "elevenlabs_api_key": self.elevenlabs_api_key, "elevenlabs_voice_id": self.elevenlabs_voice_id,
-                "patterns": self.patterns, "milking_patterns": self.milking_patterns,
-                "rules": self.rules, "user_profile": self.user_profile,
-                "min_depth": self.min_depth, "max_depth": self.max_depth,
-                "min_speed": self.min_speed, "max_speed": self.max_speed,
-                "auto_min_time": self.auto_min_time, "auto_max_time": self.auto_max_time,
-                "milking_min_time": self.milking_min_time, "milking_max_time": self.milking_max_time,
-                "edging_min_time": self.edging_min_time, "edging_max_time": self.edging_max_time,
+                "elevenlabs_api_key": self.elevenlabs_api_key,
+                "elevenlabs_voice_id": self.elevenlabs_voice_id,
+                "image_api_key": self.image_api_key,
+                "patterns": self.patterns,
+                "milking_patterns": self.milking_patterns,
+                "rules": self.rules,
+                "user_profile": self.user_profile,
+                "min_depth": self.min_depth,
+                "max_depth": self.max_depth,
+                "min_speed": self.min_speed,
+                "max_speed": self.max_speed,
+                "auto_min_time": self.auto_min_time,
+                "auto_max_time": self.auto_max_time,
+                "milking_min_time": self.milking_min_time,
+                "milking_max_time": self.milking_max_time,
+                "edging_min_time": self.edging_min_time,
+                "edging_max_time": self.edging_max_time,
             }
             self.file_path.write_text(json.dumps(settings_dict, indent=2))

@@ -16,6 +16,7 @@ from handy_controller import HandyController
 from memory_manager import MemoryManager
 from llm_service import LLMService
 from audio_service import AudioService
+from image_service import ImageService
 from background_modes import AutoModeThread, auto_mode_logic, milking_mode_logic, edging_mode_logic
 
 # ─── INITIALIZATION ───────────────────────────────────────────────────────────────────────────────────
@@ -29,10 +30,14 @@ handy.update_settings(settings.min_speed, settings.max_speed, settings.min_depth
 
 llm = LLMService()
 audio = AudioService()
+image_service = ImageService(api_key=settings.image_api_key)
 if settings.elevenlabs_api_key:
     if audio.set_api_key(settings.elevenlabs_api_key):
         audio.fetch_available_voices()
         audio.configure_voice(settings.elevenlabs_voice_id, True)
+
+if settings.image_api_key:
+    image_service.set_api_key(settings.image_api_key)
 
 # In-Memory State
 chat_history = deque(maxlen=20)
@@ -391,11 +396,18 @@ def check_settings_route():
     if settings.handy_key and settings.min_depth < settings.max_depth:
         return jsonify({
             "configured": True, "persona": settings.persona_desc, "handy_key": settings.handy_key,
-            "ai_name": settings.ai_name, "elevenlabs_key": settings.elevenlabs_api_key,
+            "ai_name": settings.ai_name,
+            "elevenlabs_key": settings.elevenlabs_api_key,
+            "image_api_key": settings.image_api_key,
             "pfp": settings.profile_picture_b64,
             "timings": { "auto_min": settings.auto_min_time, "auto_max": settings.auto_max_time, "milking_min": settings.milking_min_time, "milking_max": settings.milking_max_time, "edging_min": settings.edging_min_time, "edging_max": settings.edging_max_time }
         })
-    return jsonify({"configured": False})
+    return jsonify({
+        "configured": False,
+        "image_api_key": settings.image_api_key,
+        "elevenlabs_key": settings.elevenlabs_api_key,
+        "pfp": settings.profile_picture_b64,
+    })
 
 @app.route('/set_ai_name', methods=['POST'])
 def set_ai_name_route():
@@ -427,6 +439,21 @@ def set_pfp_route():
     settings.profile_picture_b64 = b64_data; settings.save()
     return jsonify({"status": "success"})
 
+@app.route('/set_image_api_key', methods=['POST'])
+def set_image_api_key_route():
+    payload = request.get_json(silent=True) or {}
+    key = (payload.get('api_key') or '').strip()
+    if not key:
+        settings.image_api_key = ""
+        image_service.set_api_key("")
+        settings.save()
+        return jsonify({"status": "success", "message": "Image API key cleared."})
+
+    image_service.set_api_key(key)
+    settings.image_api_key = key
+    settings.save()
+    return jsonify({"status": "success"})
+
 @app.route('/set_handy_key', methods=['POST'])
 def set_handy_key_route():
     key = request.json.get('key')
@@ -456,6 +483,27 @@ def set_elevenlabs_voice_route():
     ok, message = audio.configure_voice(voice_id, enabled)
     if ok: settings.elevenlabs_voice_id = voice_id; settings.save()
     return jsonify({"status": "ok" if ok else "error", "message": message})
+
+@app.route('/generate_persona_image', methods=['POST'])
+def generate_persona_image_route():
+    payload = request.get_json(silent=True) or {}
+    persona = {
+        'name': (payload.get('name') or '').strip(),
+        'role': (payload.get('role') or '').strip(),
+        'body_type': (payload.get('body_type') or '').strip(),
+        'description': (payload.get('description') or '').strip(),
+        'goal': (payload.get('goal') or '').strip(),
+    }
+
+    if not any([persona['description'], persona['role'], persona['goal']]):
+        return jsonify({"status": "error", "message": "Provide persona details before generating an image."}), 400
+
+    try:
+        image_b64 = image_service.generate_persona_image(persona)
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+
+    return jsonify({"status": "success", "image_b64": image_b64})
 
 @app.route('/get_updates')
 def get_ui_updates_route():

@@ -135,6 +135,30 @@
   .row{ display:flex; gap:10px; }
   .row > *{ flex:1; }
 
+  .portrait-preview{
+    margin-top:12px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:12px;
+    border-radius: var(--radius-md);
+    background: rgba(0,0,0,0.35);
+    border:1px solid rgba(255,255,255,0.08);
+  }
+  .portrait-preview img{
+    max-width:240px;
+    width:100%;
+    border-radius: var(--radius-md);
+    border:1px solid rgba(255,255,255,0.12);
+    box-shadow: 0 0 12px rgba(255,0,160,0.25);
+  }
+  .portrait-status{
+    margin-top:8px;
+    font-size:12px;
+    color:var(--muted);
+    text-align:center;
+  }
+
   .toggle{
     display:flex; align-items:center; gap:10px;
     justify-content: space-between;
@@ -466,9 +490,13 @@
         <h3>Character Portrait</h3>
         <div class="small">Generate an image for your character (hook up model later).</div>
         <div class="row">
-          <button class="action primary">Generate Portrait</button>
-          <button class="action ghost">Upload</button>
+          <button class="action primary" id="generatePortrait">Generate Portrait</button>
+          <button class="action ghost" id="uploadPortrait">Upload</button>
         </div>
+        <div class="portrait-preview" aria-live="polite">
+          <img id="personaPortraitPreview" src="static/default-pfp.png" alt="Persona portrait preview" />
+        </div>
+        <div class="portrait-status" id="portraitStatus">Portrait preview updates after generation.</div>
 
         <div class="divider"></div>
 
@@ -541,6 +569,131 @@
     document.body.appendChild(t);
     setTimeout(()=>{ t.remove(); }, 1400);
   }
+
+  async function apiCall(endpoint, options = {}){
+    try {
+      const response = await fetch(endpoint, options);
+      const isJson = response.headers.get('content-type')?.includes('application/json');
+      const payload = isJson ? await response.json() : await response.text();
+      if (!response.ok) {
+        const message = (payload && payload.message) || (payload && payload.error) || `HTTP ${response.status}`;
+        throw new Error(message);
+      }
+      return payload;
+    } catch (error) {
+      console.error(`API call to ${endpoint} failed:`, error);
+      toast(error.message || 'Network error');
+      throw error;
+    }
+  }
+
+  const imageKeyInput = document.getElementById('imageKey');
+  const portraitPreview = document.getElementById('personaPortraitPreview');
+  const portraitStatus = document.getElementById('portraitStatus');
+  const generatePortraitBtn = document.getElementById('generatePortrait');
+
+  let savedImageApiKey = '';
+  let imageKeyDirty = false;
+
+  async function saveImageApiKey(){
+    if (!imageKeyInput) return;
+    const key = imageKeyInput.value.trim();
+    const result = await apiCall('/set_image_api_key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: key }),
+    });
+    savedImageApiKey = key;
+    const message = (result && result.message) || (key ? 'Image API key saved.' : 'Image API key cleared.');
+    toast(message);
+  }
+
+  async function ensureImageKeyReady(){
+    if (!imageKeyInput) return '';
+    const key = imageKeyInput.value.trim();
+    if (!key){
+      throw new Error('Add an image generator API key first.');
+    }
+    if (imageKeyDirty || key !== savedImageApiKey){
+      await saveImageApiKey();
+      imageKeyDirty = false;
+    }
+    return key;
+  }
+
+  imageKeyInput?.addEventListener('input', ()=>{ imageKeyDirty = true; });
+  imageKeyInput?.addEventListener('blur', ()=>{
+    if (!imageKeyDirty) return;
+    ensureImageKeyReady().catch(()=>{});
+  });
+
+  async function bootstrapSettings(){
+    try {
+      const settings = await apiCall('/check_settings');
+      if (!settings) return;
+      if (settings.image_api_key && imageKeyInput){
+        savedImageApiKey = settings.image_api_key;
+        imageKeyInput.value = settings.image_api_key;
+        imageKeyDirty = false;
+      }
+      if (settings.pfp && portraitPreview){
+        const dataUrl = settings.pfp.startsWith('data:') ? settings.pfp : `data:image/png;base64,${settings.pfp}`;
+        portraitPreview.src = dataUrl;
+        if (portraitStatus){ portraitStatus.textContent = 'Loaded saved portrait from settings.'; }
+      }
+    } catch (error) {
+      console.warn('Unable to load existing settings.', error);
+    }
+  }
+  bootstrapSettings();
+
+  generatePortraitBtn?.addEventListener('click', async ()=>{
+    if (!portraitStatus) return;
+    const originalLabel = generatePortraitBtn.textContent;
+    generatePortraitBtn.disabled = true;
+    generatePortraitBtn.textContent = 'Generating…';
+    portraitStatus.textContent = 'Generating portrait…';
+    try {
+      await ensureImageKeyReady();
+      const payload = {
+        name: document.getElementById('personaName')?.value.trim(),
+        role: document.getElementById('personaRole')?.value.trim(),
+        body_type: document.getElementById('personaBody')?.value,
+        description: document.getElementById('personaDesc')?.value.trim(),
+        goal: document.getElementById('personaGoal')?.value.trim(),
+      };
+      const response = await apiCall('/generate_persona_image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const imageB64 = response?.image_b64;
+      if (!imageB64){
+        portraitStatus.textContent = 'Image service returned an empty response.';
+        return;
+      }
+      const dataUrl = imageB64.startsWith('data:') ? imageB64 : `data:image/png;base64,${imageB64}`;
+      if (portraitPreview){ portraitPreview.src = dataUrl; }
+      portraitStatus.textContent = 'Portrait generated! Saving to your profile…';
+      try {
+        await apiCall('/set_profile_picture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pfp_b64: imageB64 }),
+        });
+        portraitStatus.textContent = 'Portrait generated and saved!';
+        toast('Profile picture updated.');
+      } catch (saveError) {
+        console.error('Unable to save profile picture', saveError);
+        portraitStatus.textContent = 'Portrait generated, but saving failed.';
+      }
+    } catch (error) {
+      portraitStatus.textContent = error.message || 'Portrait generation failed.';
+    } finally {
+      generatePortraitBtn.disabled = false;
+      generatePortraitBtn.textContent = originalLabel;
+    }
+  });
 
   // Collapser
   const agentsToggle = document.getElementById('agentsToggle');

@@ -68,3 +68,7 @@ Don't be fooled by the 0-100 scale! The Handy is a powerful device. For many peo
 This app is a passion project and is completely free. If you're having fun and want to support future development, consider buying me a coffee!
 
 https://ko-fi.com/strokegpt
+
+## Persona Duel Backend Integration Plan
+
+Curious about the path for wiring the new neon Persona Duel interface into the Flask backend? Check out [`docs/persona_duel_backend_plan.md`](docs/persona_duel_backend_plan.md) for a step-by-step roadmap covering API design, Handy control hooks, persona persistence, and a recommended free Hugging Face image-generation pipeline.

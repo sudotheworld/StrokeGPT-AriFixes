@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from flask import Flask, request, jsonify, render_template_string, send_file, send_from_directory
+from flask import Flask, request, jsonify, render_template_string, send_file, send_from_directory, abort
 from config import Config
 
 from settings_manager import SettingsManager
@@ -16,6 +16,7 @@ from handy_controller import HandyController
 from memory_manager import MemoryManager
 from llm_service import LLMService
 from audio_service import AudioService
+from image_service import ImageService
 from background_modes import AutoModeThread, auto_mode_logic, milking_mode_logic, edging_mode_logic
 
 # ─── INITIALIZATION ───────────────────────────────────────────────────────────────────────────────────
@@ -29,6 +30,7 @@ handy.update_settings(settings.min_speed, settings.max_speed, settings.min_depth
 
 llm = LLMService()
 audio = AudioService()
+image_service = ImageService()
 if settings.elevenlabs_api_key:
     if audio.set_api_key(settings.elevenlabs_api_key):
         audio.fetch_available_voices()
@@ -163,6 +165,26 @@ def home_page():
 @app.route('/static/<path:path>')
 def send_static(path):
     return send_from_directory('static', path)
+
+
+@app.route('/generated_images/<path:image_name>')
+def serve_generated_image(image_name: str):
+    try:
+        candidate_path = image_service.get_image_path(image_name)
+    except ValueError:
+        abort(404)
+
+    resolved_candidate = candidate_path.resolve(strict=False)
+    gallery_root = image_service.gallery_root.resolve()
+    try:
+        resolved_candidate.relative_to(gallery_root)
+    except ValueError:
+        abort(404)
+
+    if not resolved_candidate.is_file():
+        abort(404)
+
+    return send_file(resolved_candidate)
 
 # Simple healthcheck route to verify connectivity and configuration.
 @app.get("/health")

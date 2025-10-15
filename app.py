@@ -4,10 +4,13 @@ import io
 import re
 import json
 import atexit
+import queue
 import threading
 import time
+import uuid
 from collections import deque
 from pathlib import Path
+from typing import Any, Dict
 from flask import Flask, request, jsonify, render_template_string, send_file, send_from_directory
 from config import Config
 
@@ -18,12 +21,32 @@ from llm_service import LLMService
 from audio_service import AudioService
 from background_modes import AutoModeThread, auto_mode_logic, milking_mode_logic, edging_mode_logic
 from funscript_utils import compute_metrics, compute_segments, hash_funscript, load_actions_from_bytes
+from image_service import ImageService
 
 # ─── INITIALIZATION ───────────────────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 # Removed static LLM_URL; defaults are provided via Config.
 settings = SettingsManager(settings_file_path="my_settings.json")
 settings.load()
+if not settings.image_api_url and Config.IMAGE_API_URL:
+    settings.image_api_url = Config.IMAGE_API_URL
+if not settings.image_prompt_prefix and Config.IMAGE_PROMPT_PREFIX:
+    settings.image_prompt_prefix = Config.IMAGE_PROMPT_PREFIX
+if not settings.image_negative_prompt and Config.IMAGE_NEGATIVE_PROMPT:
+    settings.image_negative_prompt = Config.IMAGE_NEGATIVE_PROMPT
+if not settings.image_steps:
+    settings.image_steps = Config.IMAGE_STEPS
+if not settings.image_cfg_scale:
+    settings.image_cfg_scale = Config.IMAGE_CFG_SCALE
+if not settings.image_sampler:
+    settings.image_sampler = Config.IMAGE_SAMPLER
+if not settings.image_clip_skip:
+    settings.image_clip_skip = Config.IMAGE_CLIP_SKIP
+if not settings.image_width:
+    settings.image_width = Config.IMAGE_WIDTH
+if not settings.image_height:
+    settings.image_height = Config.IMAGE_HEIGHT
+settings.save()
 
 handy = HandyController(settings.handy_key)
 handy.update_settings(settings.min_speed, settings.max_speed, settings.min_depth, settings.max_depth)
@@ -34,6 +57,12 @@ if settings.elevenlabs_api_key:
     if audio.set_api_key(settings.elevenlabs_api_key):
         audio.fetch_available_voices()
         audio.configure_voice(settings.elevenlabs_voice_id, True)
+
+image_service = ImageService(output_dir="generated_images")
+_image_job_queue = queue.Queue()
+_image_jobs: Dict[str, Dict[str, Any]] = {}
+_image_jobs_lock = threading.Lock()
+_image_worker_threads: list[threading.Thread] = []
 
 # In-Memory State
 chat_history = deque(maxlen=20)
@@ -137,17 +166,183 @@ def add_message_to_queue(text, add_to_history=True):
     threading.Thread(target=audio.generate_audio_for_text, args=(text,)).start()
 
 
-def _queue_image_generation(*_args, **_kwargs):
-    """Queue an image generation job for asynchronous processing.
+def _update_image_job(job_id: str, updates: Dict[str, Any]) -> None:
+    with _image_jobs_lock:
+        job = _image_jobs.get(job_id)
+        if not job:
+            return
+        job.update(updates)
 
-    Each worker thread that consumes the queue is expected to obtain its
-    own :class:`requests.Session` via :mod:`image_service.ImageService`'s
-    thread-local session factory.  Sharing a single ``Session`` across
-    threads is not safe in ``requests``, so callers must never reuse a
-    session obtained by another worker.
-    """
 
-    return None
+def _image_worker() -> None:
+    while True:
+        item = _image_job_queue.get()
+        if item is None:
+            _image_job_queue.task_done()
+            return
+
+        job_id, task = item
+        _update_image_job(job_id, {"status": "running", "started_at": time.time()})
+        try:
+            entry = image_service.request_image(
+                task["url"],
+                task["payload"],
+                prompt=task["prompt"],
+                suffix=task.get("suffix", ".jpg"),
+                metadata=task.get("metadata"),
+                timeout=task.get("timeout"),
+                headers=task.get("headers"),
+            )
+            _update_image_job(
+                job_id,
+                {
+                    "status": "finished",
+                    "finished_at": time.time(),
+                    "filename": entry.filename,
+                    "gallery_entry": {
+                        "filename": entry.filename,
+                        "prompt": entry.prompt,
+                        "metadata": entry.metadata,
+                    },
+                },
+            )
+        except Exception as exc:  # pragma: no cover - defensive branch
+            _update_image_job(
+                job_id,
+                {
+                    "status": "error",
+                    "finished_at": time.time(),
+                    "error": str(exc),
+                },
+            )
+        finally:
+            _image_job_queue.task_done()
+
+
+def _start_image_workers(count: int) -> None:
+    for idx in range(max(1, count)):
+        worker = threading.Thread(target=_image_worker, name=f"image-worker-{idx}", daemon=True)
+        worker.start()
+        _image_worker_threads.append(worker)
+
+
+def _shutdown_image_workers() -> None:
+    for _ in _image_worker_threads:
+        _image_job_queue.put(None)
+    for worker in _image_worker_threads:
+        worker.join(timeout=1)
+
+
+def _coerce_int(value: Any, field: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an integer") from exc
+
+
+def _coerce_float(value: Any, field: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a number") from exc
+
+
+def _queue_image_generation(prompt: str, *, overrides: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Queue an image generation job for asynchronous processing."""
+
+    if not prompt or not prompt.strip():
+        raise ValueError("Prompt is required")
+
+    overrides = overrides or {}
+
+    url = overrides.get("url") or settings.image_api_url or Config.IMAGE_API_URL
+    if not url:
+        raise RuntimeError("Image generator URL is not configured")
+
+    api_key = overrides.get("api_key") or settings.image_api_key or Config.IMAGE_API_KEY
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+        headers.setdefault("X-API-Key", api_key)
+
+    prompt_prefix = overrides.get("prompt_prefix")
+    if prompt_prefix is None:
+        prompt_prefix = settings.image_prompt_prefix or Config.IMAGE_PROMPT_PREFIX
+
+    negative_prompt = overrides.get("negative_prompt")
+    if negative_prompt is None:
+        negative_prompt = settings.image_negative_prompt or Config.IMAGE_NEGATIVE_PROMPT
+
+    steps = overrides.get("steps", settings.image_steps or Config.IMAGE_STEPS)
+    scale = overrides.get("scale", settings.image_cfg_scale or Config.IMAGE_CFG_SCALE)
+    sampler = overrides.get("sampler", settings.image_sampler or Config.IMAGE_SAMPLER)
+    width = overrides.get("width", settings.image_width or Config.IMAGE_WIDTH)
+    height = overrides.get("height", settings.image_height or Config.IMAGE_HEIGHT)
+    clip_skip = overrides.get("clip_skip", settings.image_clip_skip or Config.IMAGE_CLIP_SKIP)
+    restore_faces = overrides.get("restore_faces")
+    if restore_faces is None:
+        restore_faces = settings.image_restore_faces or Config.IMAGE_RESTORE_FACES
+
+    enable_hr = bool(overrides.get("enable_hr", False))
+    seed = overrides.get("seed", -1)
+
+    if not isinstance(restore_faces, bool):
+        restore_faces = str(restore_faces).lower() in {"true", "1", "yes", "on"}
+
+    try:
+        steps = _coerce_int(steps, "steps")
+        width = _coerce_int(width, "width")
+        height = _coerce_int(height, "height")
+        clip_skip = _coerce_int(clip_skip, "clip_skip")
+        seed = _coerce_int(seed, "seed")
+        scale = _coerce_float(scale, "scale")
+    except ValueError:
+        raise
+
+    payload = {
+        "prompt": prompt,
+        "steps": steps,
+        "scale": scale,
+        "sampler": sampler,
+        "width": width,
+        "height": height,
+        "restore_faces": restore_faces,
+        "enable_hr": enable_hr,
+        "prompt_prefix": prompt_prefix or "",
+        "negative_prompt": negative_prompt or "",
+        "seed": seed,
+        "clip_skip": clip_skip,
+    }
+
+    metadata = {
+        "request_payload": payload,
+        "url": url,
+    }
+    job_id = uuid.uuid4().hex
+    job_info = {
+        "id": job_id,
+        "status": "queued",
+        "created_at": time.time(),
+        "prompt": prompt,
+    }
+    with _image_jobs_lock:
+        _image_jobs[job_id] = job_info
+
+    task = {
+        "url": url,
+        "payload": payload,
+        "prompt": prompt,
+        "metadata": metadata,
+        "timeout": Config.IMAGE_REQUEST_TIMEOUT,
+        "headers": headers or None,
+        "suffix": overrides.get("suffix", ".jpg"),
+    }
+    _image_job_queue.put((job_id, task))
+    return job_info
+
+
+_start_image_workers(Config.IMAGE_WORKER_COUNT)
+atexit.register(_shutdown_image_workers)
 
 def start_background_mode(mode_logic, initial_message, mode_name):
     global auto_mode_active_task, edging_start_time
@@ -428,6 +623,18 @@ def check_settings_route():
             "ai_name": settings.ai_name, "elevenlabs_key": settings.elevenlabs_api_key,
             "pfp": settings.profile_picture_b64,
             "timings": { "auto_min": settings.auto_min_time, "auto_max": settings.auto_max_time, "milking_min": settings.milking_min_time, "milking_max": settings.milking_max_time, "edging_min": settings.edging_min_time, "edging_max": settings.edging_max_time }
+        ,
+            "image": {
+                "url": settings.image_api_url or Config.IMAGE_API_URL,
+                "has_key": bool(settings.image_api_key or Config.IMAGE_API_KEY),
+                "defaults": {
+                    "width": settings.image_width,
+                    "height": settings.image_height,
+                    "steps": settings.image_steps,
+                    "scale": settings.image_cfg_scale,
+                    "sampler": settings.image_sampler,
+                },
+            },
         })
     return jsonify({"configured": False})
 
@@ -490,6 +697,142 @@ def set_elevenlabs_voice_route():
     ok, message = audio.configure_voice(voice_id, enabled)
     if ok: settings.elevenlabs_voice_id = voice_id; settings.save()
     return jsonify({"status": "ok" if ok else "error", "message": message})
+
+
+@app.route('/setup_image_generator', methods=['POST'])
+def setup_image_generator_route():
+    data = request.get_json(force=True, silent=True) or {}
+
+    updates: Dict[str, Any] = {}
+    errors = []
+
+    if 'url' in data:
+        url = (data.get('url') or '').strip()
+        if url:
+            settings.image_api_url = url
+            updates['url'] = url
+        else:
+            errors.append('Image generator URL cannot be empty')
+
+    if 'api_key' in data:
+        key = (data.get('api_key') or '').strip()
+        settings.image_api_key = key
+        updates['api_key'] = bool(key)
+
+    if 'prompt_prefix' in data:
+        settings.image_prompt_prefix = data.get('prompt_prefix') or ''
+        updates['prompt_prefix'] = settings.image_prompt_prefix
+
+    if 'negative_prompt' in data:
+        settings.image_negative_prompt = data.get('negative_prompt') or ''
+        updates['negative_prompt'] = settings.image_negative_prompt
+
+    def _maybe_set_numeric(field: str, attr: str, caster, label: str) -> None:
+        if field in data:
+            try:
+                setattr(settings, attr, caster(data[field]))
+                updates[field] = getattr(settings, attr)
+            except (TypeError, ValueError):
+                errors.append(f"Invalid {label}")
+
+    _maybe_set_numeric('width', 'image_width', int, 'width')
+    _maybe_set_numeric('height', 'image_height', int, 'height')
+    _maybe_set_numeric('steps', 'image_steps', int, 'steps')
+    _maybe_set_numeric('scale', 'image_cfg_scale', float, 'scale')
+    _maybe_set_numeric('clip_skip', 'image_clip_skip', int, 'clip skip')
+
+    if 'sampler' in data:
+        settings.image_sampler = str(data['sampler']) or settings.image_sampler
+        updates['sampler'] = settings.image_sampler
+
+    if 'restore_faces' in data:
+        val = data['restore_faces']
+        settings.image_restore_faces = bool(val) if isinstance(val, bool) else str(val).lower() in {"true", "1", "yes", "on"}
+        updates['restore_faces'] = settings.image_restore_faces
+
+    if errors:
+        return jsonify({"status": "error", "message": "; ".join(errors)}), 400
+
+    if not settings.image_api_url:
+        return jsonify({"status": "error", "message": "Image generator URL is not configured"}), 400
+
+    settings.save()
+    return jsonify({
+        "status": "success",
+        "image": {
+            "url": settings.image_api_url,
+            "has_key": bool(settings.image_api_key),
+            "defaults": {
+                "width": settings.image_width,
+                "height": settings.image_height,
+                "steps": settings.image_steps,
+                "scale": settings.image_cfg_scale,
+                "sampler": settings.image_sampler,
+                "clip_skip": settings.image_clip_skip,
+                "restore_faces": settings.image_restore_faces,
+            },
+        },
+        "updates": updates,
+    })
+
+
+@app.post('/api/image/generate')
+def api_image_generate_route():
+    data = request.get_json(force=True, silent=True) or {}
+    prompt = (data.get('prompt') or '').strip()
+    if not prompt:
+        return jsonify({"status": "error", "message": "Prompt is required"}), 400
+
+    overrides = {k: v for k, v in data.items() if k != 'prompt'}
+    try:
+        job = _queue_image_generation(prompt, overrides=overrides)
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+
+    return jsonify({"status": "queued", "job": dict(job), "job_id": job['id']})
+
+
+@app.get('/api/image/jobs/<job_id>')
+def api_image_job_status(job_id: str):
+    with _image_jobs_lock:
+        job = _image_jobs.get(job_id)
+        if job:
+            job = dict(job)
+    if not job:
+        return jsonify({"status": "error", "message": "Job not found"}), 404
+
+    if job.get('filename'):
+        job.setdefault('image_url', f"/generated_images/{job['filename']}")
+    return jsonify(job)
+
+
+@app.get('/api/image/gallery')
+def api_image_gallery():
+    entries = [
+        {
+            "filename": entry.filename,
+            "prompt": entry.prompt,
+            "metadata": entry.metadata,
+            "image_url": f"/generated_images/{entry.filename}",
+        }
+        for entry in image_service.list_gallery()
+    ]
+    return jsonify({"gallery": entries})
+
+
+@app.delete('/api/image/gallery')
+def api_image_gallery_clear():
+    image_service.clear_gallery()
+    with _image_jobs_lock:
+        _image_jobs.clear()
+    return jsonify({"status": "cleared"})
+
+
+@app.get('/generated_images/<path:filename>')
+def serve_generated_image(filename: str):
+    return send_from_directory(str(image_service.output_dir), filename)
 
 @app.route('/get_updates')
 def get_ui_updates_route():

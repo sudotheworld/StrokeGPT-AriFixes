@@ -20,6 +20,17 @@ class SettingsManager:
         self.funscript_catalog = {}
         self.elevenlabs_api_key = ""
         self.elevenlabs_voice_id = ""
+        self.image_api_url = ""
+        self.image_api_key = ""
+        self.image_prompt_prefix = ""
+        self.image_negative_prompt = ""
+        self.image_width = 512
+        self.image_height = 512
+        self.image_steps = 30
+        self.image_cfg_scale = 6.0
+        self.image_sampler = "DDIM"
+        self.image_clip_skip = 1
+        self.image_restore_faces = False
         self.min_depth = 5
         self.max_depth = 100
         self.min_speed = 10
@@ -56,6 +67,17 @@ class SettingsManager:
             self.funscript_catalog = catalog
             self.elevenlabs_api_key = data.get("elevenlabs_api_key", "")
             self.elevenlabs_voice_id = data.get("elevenlabs_voice_id", "")
+            self.image_api_url = data.get("image_api_url", "")
+            self.image_api_key = data.get("image_api_key", "")
+            self.image_prompt_prefix = data.get("image_prompt_prefix", "")
+            self.image_negative_prompt = data.get("image_negative_prompt", "")
+            self.image_width = data.get("image_width", 512)
+            self.image_height = data.get("image_height", 512)
+            self.image_steps = data.get("image_steps", 30)
+            self.image_cfg_scale = data.get("image_cfg_scale", 6.0)
+            self.image_sampler = data.get("image_sampler", "DDIM")
+            self.image_clip_skip = data.get("image_clip_skip", 1)
+            self.image_restore_faces = data.get("image_restore_faces", False)
             self.min_depth = data.get("min_depth", 5)
             self.max_depth = data.get("max_depth", 100)
             self.min_speed = data.get("min_speed", 10)
@@ -90,6 +112,13 @@ class SettingsManager:
                 "persona_desc": self.persona_desc,
                 "profile_picture_b64": self.profile_picture_b64,
                 "elevenlabs_api_key": self.elevenlabs_api_key, "elevenlabs_voice_id": self.elevenlabs_voice_id,
+                "image_api_url": self.image_api_url, "image_api_key": self.image_api_key,
+                "image_prompt_prefix": self.image_prompt_prefix,
+                "image_negative_prompt": self.image_negative_prompt,
+                "image_width": self.image_width, "image_height": self.image_height,
+                "image_steps": self.image_steps, "image_cfg_scale": self.image_cfg_scale,
+                "image_sampler": self.image_sampler, "image_clip_skip": self.image_clip_skip,
+                "image_restore_faces": self.image_restore_faces,
                 "patterns": self.patterns, "milking_patterns": self.milking_patterns,
                 "rules": self.rules, "user_profile": self.user_profile,
                 "funscript_catalog": self.funscript_catalog,

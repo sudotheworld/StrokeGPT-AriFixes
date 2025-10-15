@@ -180,6 +180,16 @@
     display:flex; flex-wrap: wrap; gap:8px; padding: 0 14px 12px 14px; align-items:center;
   }
   .rating .label{ font-size:12px; font-weight:800; letter-spacing:.3px; color:#ccc; margin-right:8px; }
+  .rating-note{
+    flex: 1 1 220px;
+    min-width: 200px;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,.1);
+    background: rgba(0,0,0,.3);
+    color: var(--text);
+    padding: 10px 12px;
+  }
+  .rating-note:focus{ box-shadow: var(--ring); border-color: var(--brand1); outline: none; }
   .star{
     --accent: #00ffff;
     position: relative;
@@ -191,6 +201,10 @@
     font-weight: 900;
     font-size: 12px;
     color:var(--text);
+  }
+  .star:disabled{
+    opacity: .6;
+    cursor: wait;
   }
   .star[data-sign="neg"]{ --accent: #ff00a0; }
   .star.active{
@@ -435,6 +449,7 @@
         <button class="star" data-score="3"><span class="num">+3</span></button>
         <button class="star" data-score="4"><span class="num">+4</span></button>
         <button class="star" data-score="5"><span class="num">+5</span></button>
+        <input id="feedbackNote" class="rating-note" type="text" placeholder="Add an optional note" aria-label="Feedback note" />
       </div>
 
       <div class="dropzone panel" id="funsDrop">
@@ -639,12 +654,32 @@
 
   // Stars rating (−5..−1, +1..+5)
   const stars = Array.from(document.querySelectorAll('.star'));
-  stars.forEach(btn => btn.addEventListener('click', () => {
-    stars.forEach(s => s.classList.remove('active'));
-    btn.classList.add('active');
-    const score = btn.getAttribute('data-score');
-    // Simulate write to memory
-    toast('Saved rating ' + score + ' to Memory');
+  const feedbackNote = document.getElementById('feedbackNote');
+  const setStarsDisabled = (disabled) => {
+    stars.forEach(s => { s.disabled = disabled; });
+  };
+  stars.forEach(btn => btn.addEventListener('click', async () => {
+    const scoreAttr = btn.getAttribute('data-score');
+    const score = scoreAttr ? Number(scoreAttr) : null;
+    if(score === null || Number.isNaN(score)) return;
+    const note = feedbackNote?.value.trim() ?? '';
+    setStarsDisabled(true);
+    try {
+      const res = await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ score, note })
+      });
+      if(!res.ok) throw new Error('Request failed');
+      stars.forEach(s => s.classList.remove('active'));
+      btn.classList.add('active');
+      toast('Saved rating ' + score + ' to Memory');
+    } catch(err){
+      console.error('Feedback save failed', err);
+      toast('Failed to save feedback. Please try again.');
+    } finally {
+      setStarsDisabled(false);
+    }
   }));
 
   // Dropzone (FunScript)

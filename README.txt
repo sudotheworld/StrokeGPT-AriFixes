@@ -89,6 +89,19 @@ platform‑specific secrets file in your user configuration directory. Edit the
 environment variables or `.env` entries if you want to change ports, API keys,
 or default models—otherwise the included defaults will "just work."
 
+### Development workflow
+
+If you're modifying the project, install the requirements into a virtual
+environment and run the automated test suite before pushing changes:
+
+```
+pip install -r requirements.txt
+pytest
+```
+
+Running `pytest` locally ensures configuration helpers still behave as
+expected and prevents regressions from slipping into the UI work.
+
 *A Quick Note on Speed
 
 Don't be fooled by the 0-100 scale! The Handy is a powerful device. For many people, a Max Speed setting between 10 and 25 is more than intense enough. It's highly recommended to start low and find what works for you.

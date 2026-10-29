@@ -110,3 +110,73 @@ Don't be fooled by the 0-100 scale! The Handy is a powerful device. For many peo
 This app is a passion project and is completely free. If you're having fun and want to support future development, consider buying me a coffee!
 
 https://ko-fi.com/strokegpt
+
+TEXT-ONLY CONVERSATION FEEDBACK
+-------------------------------
+The main composer sends text-only chat to /api/conversation using the configured
+OLLAMA_URL and OLLAMA_MODEL. It does not use the device-command chat path.
+Select "Rate this reply", choose Overall, Clarity, Relevance, Tone, or Helpfulness,
+add an optional note (up to 300 characters), and click a score from -5 through +5.
+-5 means strongly dislike, 0 means neutral, and +5 means strongly like. No score
+selected means unrated. Scores save immediately; clicking again revises that
+reply's rating for the selected aspect. Other aspects are preserved.
+
+Recent ratings and quoted replies are supplied as conversational preference
+examples to subsequent text-only prompts. This is prompt context, not model
+training, and it does not guarantee that every response will match a preference.
+
+History and ratings persist in conversation.sqlite3 (override with CONVERSATION_DB).
+The browser receives an HttpOnly, SameSite cookie that identifies its conversation;
+keep this cookie to restore history after restarting the server. Clearing cookies
+starts a new conversation. Different browsers do not share history. This is a
+local browser identity, not an account login or cross-device sync. The database
+contains conversation text and feedback; do not commit it to source control.
+The UI restores the latest 20 turns; prompts include up to 10 prior turns and
+20 recent ratings. The legacy /api/feedback route remains a separate log-only API.
+
+Validation:
+  python -m pytest -q
+  node --test tests/feedback_ui.test.cjs
+
+
+AUTOMATIC TEXT DISCUSSION AND CONVERSATION CONTROLS
+-------------------------------------------------
+Enter a topic and click Start A <-> B. A explores ideas and B questions assumptions;
+both use the same configured LLM with distinct speaker instructions. They alternate
+one text reply at a time. Set turns to 0 to continue until stopped (the default),
+or choose 1 to 200 for a bounded run. There is a two-second pause between automatic
+turns. The page must remain open; it does not resume automatically after a reload.
+Stop after current reply prevents further requests while letting an in-flight reply
+finish. Errors/timeouts pause the discussion without automatically retrying.
+Every turn invokes the configured model; this is not two separate model instances.
+
+To join in, type and Send. Up to five messages can wait for the next reply; queued
+human messages are handled before another automatic continuation. Unanswered queued
+messages are returned to the draft when you stop or a request fails. The draft is
+stored locally in this browser, including queued messages, and cleared when sent
+or after confirmed conversation deletion. Pause the discussion to rate a reply.
+
+Scores have text labels, visible keyboard focus, and Left/Right/Home/End navigation;
+Enter or Space submits the focused score. The rating summary lists saved aspects.
+Remove this aspect's rating changes it back to unrated, rather than neutral.
+Use my ratings in future replies toggles saved rating examples on or off while
+keeping ordinary conversation context. Export downloads all this browser's saved
+turns, speaker labels, timestamps, and ratings as versioned JSON. Delete asks for
+confirmation, then deletes this browser's saved turns and ratings. Another browser's
+history is unaffected, and pending model responses cannot restore deleted history.
+
+Requests have timeouts (200 seconds for generation, 15 seconds for other operations).
+A timed-out request may already have saved server-side; reload history before retrying
+a send. Closing the page stops future turns, but an in-flight reply may still save.
+
+
+OPTIONAL MAC PYTORCH LAB
+-----------------------
+Run bash scripts/install-pytorch-macos.sh on the MacBook to install a separate
+~/Applications/PyTorch-Lab/.venv environment. It uses native Python 3.11, installs
+it through an existing native Homebrew when needed, and checks dependencies,
+matrix multiplication, and gradients. Apple silicon uses a compatible stable
+PyTorch wheel and checks MPS when available. Intel uses the legacy 2.2.2 CPU
+wheel with NumPy below 2. If Python and Homebrew are absent it prints the official
+Python installer link and stops. PyTorch is optional, does not download an LLM,
+and does not alter the running app or its Python environment.

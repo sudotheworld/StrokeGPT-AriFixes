@@ -110,3 +110,30 @@ Don't be fooled by the 0-100 scale! The Handy is a powerful device. For many peo
 This app is a passion project and is completely free. If you're having fun and want to support future development, consider buying me a coffee!
 
 https://ko-fi.com/strokegpt
+
+TEXT-ONLY CONVERSATION FEEDBACK
+-------------------------------
+The main composer sends text-only chat to /api/conversation using the configured
+OLLAMA_URL and OLLAMA_MODEL. It does not use the device-command chat path.
+Select "Rate this reply", choose Overall, Clarity, Relevance, Tone, or Helpfulness,
+add an optional note (up to 300 characters), and click a score from -5 through +5.
+-5 means strongly dislike, 0 means neutral, and +5 means strongly like. No score
+selected means unrated. Scores save immediately; clicking again revises that
+reply's rating for the selected aspect. Other aspects are preserved.
+
+Recent ratings and quoted replies are supplied as conversational preference
+examples to subsequent text-only prompts. This is prompt context, not model
+training, and it does not guarantee that every response will match a preference.
+
+History and ratings persist in conversation.sqlite3 (override with CONVERSATION_DB).
+The browser receives an HttpOnly, SameSite cookie that identifies its conversation;
+keep this cookie to restore history after restarting the server. Clearing cookies
+starts a new conversation. Different browsers do not share history. This is a
+local browser identity, not an account login or cross-device sync. The database
+contains conversation text and feedback; do not commit it to source control.
+The UI restores the latest 20 turns; prompts include up to 10 prior turns and
+20 recent ratings. The legacy /api/feedback route remains a separate log-only API.
+
+Validation:
+  python -m pytest -q
+  node --test tests/feedback_ui.test.cjs

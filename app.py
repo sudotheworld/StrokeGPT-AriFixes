@@ -11,6 +11,8 @@ from pathlib import Path
 from flask import Flask, request, jsonify, render_template_string, send_file, send_from_directory
 from config import Config
 from feedback_api import register_feedback_routes
+from conversation_api import register_conversation_routes
+from conversation_llm import text_reply
 
 from settings_manager import SettingsManager
 from handy_controller import HandyController
@@ -233,6 +235,7 @@ def _save_state(state: dict) -> None:
 
 
 register_feedback_routes(app, lambda: FEEDBACK_LOG)
+register_conversation_routes(app, lambda: os.environ.get("CONVERSATION_DB", "conversation.sqlite3"), text_reply)
 
 
 @app.post("/api/ab")

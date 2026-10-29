@@ -10,6 +10,7 @@ from collections import deque
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template_string, send_file, send_from_directory
 from config import Config
+from feedback_api import register_feedback_routes
 
 from settings_manager import SettingsManager
 from handy_controller import HandyController
@@ -231,26 +232,7 @@ def _save_state(state: dict) -> None:
         pass
 
 
-@app.post("/api/feedback")
-def api_feedback():
-    """Record a feedback score and optional note sent from the UI."""
-    data = request.get_json(silent=True) or {}
-    try:
-        score = int(data.get("score", 0))
-    except Exception:
-        score = 0
-    note = str(data.get("note", ""))[:300]
-    rec = {
-        "ts": time.time(),
-        "score": score,
-        "note": note,
-    }
-    try:
-        with open(FEEDBACK_LOG, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(rec) + "\n")
-    except Exception:
-        pass
-    return jsonify({"ok": True})
+register_feedback_routes(app, lambda: FEEDBACK_LOG)
 
 
 @app.post("/api/ab")

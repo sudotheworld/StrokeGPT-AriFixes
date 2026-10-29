@@ -438,7 +438,7 @@
       </div>
 
       <div class="rating panel">
-        <div class="label">Rate response (saves to Memory):</div>
+        <div class="label">Rate response (saves to feedback log):</div>
         <button class="star" data-score="-5" data-sign="neg"><span class="num">−5</span></button>
         <button class="star" data-score="-4" data-sign="neg"><span class="num">−4</span></button>
         <button class="star" data-score="-3" data-sign="neg"><span class="num">−3</span></button>
@@ -449,7 +449,7 @@
         <button class="star" data-score="3"><span class="num">+3</span></button>
         <button class="star" data-score="4"><span class="num">+4</span></button>
         <button class="star" data-score="5"><span class="num">+5</span></button>
-        <input id="feedbackNote" class="rating-note" type="text" placeholder="Add an optional note" aria-label="Feedback note" />
+        <input id="feedbackNote" class="rating-note" type="text" placeholder="Add an optional note" maxlength="300" aria-label="Feedback note" />
       </div>
 
       <div class="dropzone panel" id="funsDrop">
@@ -661,7 +661,7 @@
   stars.forEach(btn => btn.addEventListener('click', async () => {
     const scoreAttr = btn.getAttribute('data-score');
     const score = scoreAttr ? Number(scoreAttr) : null;
-    if(score === null || Number.isNaN(score)) return;
+    if(btn.disabled || !Number.isInteger(score) || score === 0 || Math.abs(score) > 5) return;
     const note = feedbackNote?.value.trim() ?? '';
     setStarsDisabled(true);
     try {
@@ -671,9 +671,11 @@
         body: JSON.stringify({ score, note })
       });
       if(!res.ok) throw new Error('Request failed');
+      const result = await res.json();
+      if(result?.ok !== true) throw new Error('Feedback was not saved');
       stars.forEach(s => s.classList.remove('active'));
       btn.classList.add('active');
-      toast('Saved rating ' + score + ' to Memory');
+      toast('Saved rating ' + score + ' to feedback log');
     } catch(err){
       console.error('Feedback save failed', err);
       toast('Failed to save feedback. Please try again.');

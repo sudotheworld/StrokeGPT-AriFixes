@@ -168,3 +168,15 @@ history is unaffected, and pending model responses cannot restore deleted histor
 Requests have timeouts (200 seconds for generation, 15 seconds for other operations).
 A timed-out request may already have saved server-side; reload history before retrying
 a send. Closing the page stops future turns, but an in-flight reply may still save.
+
+
+OPTIONAL MAC PYTORCH LAB
+-----------------------
+Run bash scripts/install-pytorch-macos.sh on the MacBook to install a separate
+~/Applications/PyTorch-Lab/.venv environment. It uses native Python 3.11, installs
+it through an existing native Homebrew when needed, and checks dependencies,
+matrix multiplication, and gradients. Apple silicon uses a compatible stable
+PyTorch wheel and checks MPS when available. Intel uses the legacy 2.2.2 CPU
+wheel with NumPy below 2. If Python and Homebrew are absent it prints the official
+Python installer link and stops. PyTorch is optional, does not download an LLM,
+and does not alter the running app or its Python environment.

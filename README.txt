@@ -137,3 +137,34 @@ The UI restores the latest 20 turns; prompts include up to 10 prior turns and
 Validation:
   python -m pytest -q
   node --test tests/feedback_ui.test.cjs
+
+
+AUTOMATIC TEXT DISCUSSION AND CONVERSATION CONTROLS
+-------------------------------------------------
+Enter a topic and click Start A <-> B. A explores ideas and B questions assumptions;
+both use the same configured LLM with distinct speaker instructions. They alternate
+one text reply at a time. Set turns to 0 to continue until stopped (the default),
+or choose 1 to 200 for a bounded run. There is a two-second pause between automatic
+turns. The page must remain open; it does not resume automatically after a reload.
+Stop after current reply prevents further requests while letting an in-flight reply
+finish. Errors/timeouts pause the discussion without automatically retrying.
+Every turn invokes the configured model; this is not two separate model instances.
+
+To join in, type and Send. Up to five messages can wait for the next reply; queued
+human messages are handled before another automatic continuation. Unanswered queued
+messages are returned to the draft when you stop or a request fails. The draft is
+stored locally in this browser, including queued messages, and cleared when sent
+or after confirmed conversation deletion. Pause the discussion to rate a reply.
+
+Scores have text labels, visible keyboard focus, and Left/Right/Home/End navigation;
+Enter or Space submits the focused score. The rating summary lists saved aspects.
+Remove this aspect's rating changes it back to unrated, rather than neutral.
+Use my ratings in future replies toggles saved rating examples on or off while
+keeping ordinary conversation context. Export downloads all this browser's saved
+turns, speaker labels, timestamps, and ratings as versioned JSON. Delete asks for
+confirmation, then deletes this browser's saved turns and ratings. Another browser's
+history is unaffected, and pending model responses cannot restore deleted history.
+
+Requests have timeouts (200 seconds for generation, 15 seconds for other operations).
+A timed-out request may already have saved server-side; reload history before retrying
+a send. Closing the page stops future turns, but an in-flight reply may still save.

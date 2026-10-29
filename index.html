@@ -180,6 +180,8 @@
     display:flex; flex-wrap: wrap; gap:8px; padding: 0 14px 12px 14px; align-items:center;
   }
   .rating .label{ font-size:12px; font-weight:800; letter-spacing:.3px; color:#ccc; margin-right:8px; }
+  .conversation-tools{ display:flex; flex-wrap:wrap; gap:10px; padding:12px 14px; align-items:center; }
+  .star:focus-visible, .action:focus-visible{ outline:3px solid var(--brand1); outline-offset:3px; }
   .rating-note{
     flex: 1 1 220px;
     min-width: 200px;
@@ -420,7 +422,7 @@
             <path d="M16.5 6.5l-7.8 7.8a3 3 0 104.2 4.2l7.3-7.3a5 5 0 10-7.1-7.1L5.8 11.4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </button>
-        <input id="composerInput" type="text" placeholder="Type a message… or hold mic" />
+        <input id="composerInput" type="text" maxlength="4000" aria-label="Conversation message" placeholder="Type a message… or hold mic" />
         <button class="iconbtn" title="Voice (mic)" id="micBtn">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <rect x="9" y="3" width="6" height="10" rx="3" stroke-width="2"/>
@@ -430,7 +432,17 @@
         <button class="send">Send</button>
       </div>
 
-      <div class="rating panel">
+      <div class="panel conversation-tools" role="group" aria-label="Automatic text discussion">
+        <label for="autoTopic">Discussion topic</label>
+        <input id="autoTopic" class="rating-note" type="text" maxlength="4000" value="Discuss a surprising idea from science or philosophy." />
+        <label for="autoLimit">Turns per run (0 = until stopped)</label>
+        <input id="autoLimit" type="number" min="0" max="200" value="0" style="width:80px" />
+        <button id="autoStart" class="action" type="button">Start A ↔ B</button>
+        <button id="autoStop" class="action" type="button" disabled>Stop after current reply</button>
+        <span id="autoStatus" class="small" aria-live="polite"></span>
+        <span class="small">Type and Send to join in. Your message goes next. Text-only; A explores; B questions assumptions. Both use the configured LLM. Each turn calls it. Pause to rate replies.</span>
+      </div>
+      <div class="rating panel" role="group" aria-label="Conversation rating">
         <div class="label">Conversation feedback:</div>
         <button class="star" data-score="-5" data-sign="neg"><span class="num">−5</span></button>
         <button class="star" data-score="-4" data-sign="neg"><span class="num">−4</span></button>
@@ -449,11 +461,20 @@
           <option value="relevance">Relevance</option><option value="tone">Tone</option>
           <option value="helpfulness">Helpfulness</option>
         </select>
+        <div id="ratingSummary" class="small" aria-live="polite"></div>
         <div id="feedbackTarget" class="small" aria-live="polite"></div>
         <div class="small">−5 strongly dislike · 0 neutral · +5 strongly like. Unselected means unrated. Click a score to save.</div>
         <input id="feedbackNote" class="rating-note" type="text" placeholder="Add an optional note" maxlength="300" aria-label="Feedback note" />
       </div>
 
+      <div class="panel conversation-tools">
+        <button id="removeRating" class="action" type="button">Remove this aspect’s rating</button>
+        <label><input id="preferenceRecall" type="checkbox" checked /> Use my ratings in future replies</label>
+        <span class="small">Turning this off keeps conversation context but omits saved rating examples.</span>
+        <button id="exportConversation" class="action" type="button">Export conversation and ratings</button>
+        <button id="clearConversation" class="action" type="button">Delete conversation and ratings</button>
+        <span class="small">Unsent drafts stay in this browser until sent or deleted.</span>
+      </div>
       <div class="dropzone panel" id="funsDrop">
         <div class="leftrow">
           <div style="width:36px;height:36px;border-radius:12px;" class="rainbow"></div>

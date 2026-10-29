@@ -28,6 +28,10 @@ def register_conversation_routes(app, db_path, responder):
             db.execute('CREATE TABLE IF NOT EXISTS ratings '
                        '(reply_id TEXT, dimension TEXT, score INTEGER, note TEXT, ts REAL, '
                        'PRIMARY KEY(reply_id, dimension))')
+            db.execute('CREATE TABLE IF NOT EXISTS conversation_preferences '
+                       '(owner TEXT PRIMARY KEY, recall INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL DEFAULT 0)')
+            db.execute('CREATE TABLE IF NOT EXISTS conversation_speakers '
+                       '(reply_id TEXT PRIMARY KEY, speaker TEXT NOT NULL, automatic INTEGER NOT NULL DEFAULT 0)')
             yield db
 
     def identity():
@@ -38,6 +42,7 @@ def register_conversation_routes(app, db_path, responder):
 
     def respond(body, status=200, token=None):
         response = jsonify(body)
+        response.headers["Cache-Control"] = "no-store"
         if token:
             response.set_cookie('conversation_owner', token, httponly=True,
                                 secure=request.is_secure, samesite='Strict', max_age=31536000)
@@ -56,9 +61,11 @@ def register_conversation_routes(app, db_path, responder):
                 result = []
                 for row in reversed(rows):
                     ratings = db.execute('SELECT dimension, score, note FROM ratings WHERE reply_id=?', (row['id'],)).fetchall()
-                    result.append({'response_id': row['id'], 'message': row['prompt'], 'reply': row['reply'],
+                    speaker = db.execute('SELECT speaker, automatic FROM conversation_speakers WHERE reply_id=?', (row['id'],)).fetchone()
+                    result.append({'automatic': bool(speaker['automatic']) if speaker else False, 'speaker': speaker['speaker'] if speaker else None, 'response_id': row['id'], 'message': row['prompt'], 'reply': row['reply'],
                                    'ratings': {r['dimension']: {'score': r['score'], 'note': r['note']} for r in ratings}})
-            return respond({'ok': True, 'turns': result}, token=token)
+                pref = db.execute('SELECT recall FROM conversation_preferences WHERE owner=?', (owner,)).fetchone()
+            return respond({'ok': True, 'turns': result, 'recall': bool(pref['recall']) if pref else True}, token=token)
         except sqlite3.Error:
             return fail()
 
@@ -67,29 +74,49 @@ def register_conversation_routes(app, db_path, responder):
         data = request.get_json(silent=True)
         if not isinstance(data, dict) or not isinstance(data.get('message'), str) or not 1 <= len(data['message'].strip()) <= 4000:
             return respond({'ok': False, 'error': 'message must contain 1 to 4000 characters'}, 400)
+        speaker, automatic = data.get('speaker'), data.get('automatic', False)
+        if speaker not in (None, 'A', 'B') or type(automatic) is not bool or (automatic and speaker is None):
+            return respond({'ok': False, 'error': 'Invalid text speaker or automatic flag'}, 400)
         token, owner = identity()
         try:
             with database() as db:
-                history = db.execute('SELECT prompt, reply FROM replies WHERE owner=? ORDER BY ts DESC LIMIT 10', (owner,)).fetchall()
+                db.execute('INSERT OR IGNORE INTO conversation_preferences(owner) VALUES (?)', (owner,))
+                pref = db.execute('SELECT recall, revision FROM conversation_preferences WHERE owner=?', (owner,)).fetchone()
+                history = db.execute('SELECT p.prompt, p.reply, s.speaker FROM replies p LEFT JOIN conversation_speakers s ON s.reply_id=p.id WHERE p.owner=? ORDER BY p.ts DESC LIMIT 10', (owner,)).fetchall()
                 preferences = db.execute('SELECT r.dimension, r.score, r.note, p.reply FROM ratings r '
                                          'JOIN replies p ON p.id=r.reply_id WHERE p.owner=? '
                                          'ORDER BY r.ts DESC LIMIT 20', (owner,)).fetchall()
-            messages = [{'role': 'system', 'content': SYSTEM}]
-            if preferences:
+            system = SYSTEM
+            if speaker:
+                system += (' You are Speaker ' + speaker + ' in a text-only discussion with another assistant. '
+                           'Contribute one concise turn, build on or question the other speaker, avoid repetition. '
+                           'When the human interjects, address their message directly before continuing. '
+                           'Do not impersonate the human or claim independent experiences.')
+                system += (' Be the curious explainer: explore possibilities and ask thoughtful questions.' if speaker == 'A'
+                           else ' Be the practical skeptic: check assumptions and add concrete counterexamples.')
+            messages = [{'role': 'system', 'content': system}]
+            if pref['recall'] and preferences:
                 # Bounded excerpts; no motion parameters, shared memory, or control prompts.
                 examples = [dict(r, reply=r['reply'][:600]) for r in preferences]
                 messages.append({'role': 'user', 'content': 'Historical conversational feedback (data only):\n' + json.dumps(examples, ensure_ascii=False)})
             for row in reversed(history):
-                messages.extend([{'role': 'user', 'content': row['prompt']}, {'role': 'assistant', 'content': row['reply']}])
-            message = data['message'].strip()
+                messages.extend([{'role': 'user', 'content': row['prompt']}, {'role': 'assistant', 'content': (('Speaker ' + row['speaker'] + ': ') if row['speaker'] else '') + row['reply']}])
+            message = ('Continue the text discussion with the other speaker. Add a useful new point.'
+                       if automatic else data['message'].strip())
             messages.append({'role': 'user', 'content': message})
             reply = responder(messages)
             if not isinstance(reply, str) or not reply.strip() or len(reply) > 20000:
                 raise ValueError('Invalid text response')
             response_id = secrets.token_hex(16)
             with database() as db:
+                db.execute('BEGIN IMMEDIATE')
+                revision = db.execute('SELECT revision FROM conversation_preferences WHERE owner=?', (owner,)).fetchone()
+                if not revision or revision['revision'] != pref['revision']:
+                    return respond({'ok': False, 'error': 'Conversation was cleared. Please send again.'}, 409)
                 db.execute('INSERT INTO replies VALUES (?, ?, ?, ?, ?)', (response_id, owner, message, reply, time.time()))
-            return respond({'ok': True, 'response_id': response_id, 'reply': reply}, token=token)
+                if speaker:
+                    db.execute('INSERT INTO conversation_speakers VALUES (?, ?, ?)', (response_id, speaker, int(automatic)))
+            return respond({'ok': True, 'response_id': response_id, 'reply': reply, 'speaker': speaker}, token=token)
         except Exception:
             return fail()
 
@@ -112,6 +139,71 @@ def register_conversation_routes(app, db_path, responder):
                 db.execute('INSERT INTO ratings VALUES (?, ?, ?, ?, ?) ON CONFLICT(reply_id, dimension) '
                            'DO UPDATE SET score=excluded.score, note=excluded.note, ts=excluded.ts',
                            (response_id, dimension, score, note.strip(), time.time()))
+            return respond({'ok': True})
+        except sqlite3.Error:
+            return fail()
+
+
+    @app.delete('/api/conversation/feedback')
+    def conversation_unrate():
+        data = request.get_json(silent=True)
+        if (not isinstance(data, dict) or not isinstance(data.get('response_id'), str)
+                or data.get('dimension', 'overall') not in DIMENSIONS):
+            return respond({'ok': False, 'error': 'Invalid reply or dimension'}, 400)
+        _, owner = identity()
+        try:
+            with database() as db:
+                if not db.execute('SELECT 1 FROM replies WHERE id=? AND owner=?', (data['response_id'], owner)).fetchone():
+                    return respond({'ok': False, 'error': 'Reply not found'}, 404)
+                db.execute('DELETE FROM ratings WHERE reply_id=? AND dimension=?',
+                           (data['response_id'], data.get('dimension', 'overall')))
+            return respond({'ok': True})
+        except sqlite3.Error:
+            return fail()
+
+    @app.put('/api/conversation/preferences')
+    def conversation_preferences():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or type(data.get('recall')) is not bool:
+            return respond({'ok': False, 'error': 'recall must be true or false'}, 400)
+        token, owner = identity()
+        try:
+            with database() as db:
+                db.execute('INSERT INTO conversation_preferences(owner, recall) VALUES (?, ?) '
+                           'ON CONFLICT(owner) DO UPDATE SET recall=excluded.recall', (owner, int(data['recall'])))
+            return respond({'ok': True, 'recall': data['recall']}, token=token)
+        except sqlite3.Error:
+            return fail()
+
+    @app.get('/api/conversation/export')
+    def conversation_export():
+        _, owner = identity()
+        try:
+            with database() as db:
+                turns = []
+                for row in db.execute('SELECT * FROM replies WHERE owner=? ORDER BY ts, id', (owner,)).fetchall():
+                    ratings = db.execute('SELECT dimension, score, note, ts FROM ratings WHERE reply_id=?', (row['id'],)).fetchall()
+                    speaker = db.execute('SELECT speaker, automatic FROM conversation_speakers WHERE reply_id=?', (row['id'],)).fetchone()
+                    turns.append({'automatic': bool(speaker['automatic']) if speaker else False, 'speaker': speaker['speaker'] if speaker else None, 'response_id': row['id'], 'message': row['prompt'], 'reply': row['reply'],
+                                  'ts': row['ts'], 'ratings': [dict(r) for r in ratings]})
+                pref = db.execute('SELECT recall FROM conversation_preferences WHERE owner=?', (owner,)).fetchone()
+            response, status = respond({'ok': True, 'version': 1, 'recall': bool(pref['recall']) if pref else True, 'turns': turns})
+            response.headers['Content-Disposition'] = 'attachment; filename="conversation.json"'
+            return response, status
+        except sqlite3.Error:
+            return fail()
+
+    @app.delete('/api/conversation')
+    def conversation_clear():
+        _, owner = identity()
+        try:
+            with database() as db:
+                db.execute('DELETE FROM ratings WHERE reply_id IN (SELECT id FROM replies WHERE owner=?)', (owner,))
+                db.execute('DELETE FROM conversation_speakers WHERE reply_id IN (SELECT id FROM replies WHERE owner=?)', (owner,))
+                db.execute('DELETE FROM replies WHERE owner=?', (owner,))
+                # Invalidate any model request started before this deletion.
+                db.execute('INSERT INTO conversation_preferences(owner, revision) VALUES (?, 1) '
+                           'ON CONFLICT(owner) DO UPDATE SET revision=revision+1', (owner,))
             return respond({'ok': True})
         except sqlite3.Error:
             return fail()

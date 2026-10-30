@@ -102,5 +102,20 @@ class Config:
     HANDY_KEY: str = os.getenv("HANDY_KEY", "")
     ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
 
+    # Image generation defaults (SillyTavern Extras compatible)
+    IMAGE_API_URL: str = os.getenv("IMAGE_API_URL", "http://127.0.0.1:5100/api/image")
+    IMAGE_API_KEY: str = os.getenv("IMAGE_API_KEY", "")
+    IMAGE_PROMPT_PREFIX: str = os.getenv("IMAGE_PROMPT_PREFIX", "")
+    IMAGE_NEGATIVE_PROMPT: str = os.getenv("IMAGE_NEGATIVE_PROMPT", "")
+    IMAGE_WIDTH: int = int(os.getenv("IMAGE_WIDTH", "512"))
+    IMAGE_HEIGHT: int = int(os.getenv("IMAGE_HEIGHT", "512"))
+    IMAGE_STEPS: int = int(os.getenv("IMAGE_STEPS", "30"))
+    IMAGE_CFG_SCALE: float = float(os.getenv("IMAGE_CFG_SCALE", "6"))
+    IMAGE_SAMPLER: str = os.getenv("IMAGE_SAMPLER", "DDIM")
+    IMAGE_CLIP_SKIP: int = int(os.getenv("IMAGE_CLIP_SKIP", "1"))
+    IMAGE_RESTORE_FACES: bool = os.getenv("IMAGE_RESTORE_FACES", "false").lower() in {"1", "true", "yes", "on"}
+    IMAGE_WORKER_COUNT: int = int(os.getenv("IMAGE_WORKER_COUNT", "2"))
+    IMAGE_REQUEST_TIMEOUT: float = float(os.getenv("IMAGE_REQUEST_TIMEOUT", "120"))
+
     # Optional room pin for gating the UI (empty string means no pin)
     ROOM_PIN: str = os.getenv("ROOM_PIN", "")

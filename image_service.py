@@ -208,6 +208,7 @@ class ImageService:
         suffix: str = ".png",
         metadata: Optional[Dict[str, Any]] = None,
         timeout: tuple[float, float] | float | None = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> GalleryEntry:
         """Send ``payload`` to ``url`` and store the returned image.
 
@@ -215,10 +216,19 @@ class ImageService:
         containing base64 encoded image data.  Worker threads obtain a
         dedicated ``requests.Session`` by calling ``_get_session`` which
         ensures thread-local connections.
+
+        Parameters
+        ----------
+        timeout:
+            Optional timeout forwarded to :meth:`requests.Session.post`.
+        headers:
+            Optional mapping of HTTP headers included with the request.
+            This allows callers to provide bearer tokens or custom auth
+            headers required by remote services.
         """
 
         session = self._get_session()
-        response = session.post(url, json=payload, timeout=timeout)
+        response = session.post(url, json=payload, timeout=timeout, headers=headers)
         response.raise_for_status()
         data = response.json()
         image_b64 = data.get("image")
